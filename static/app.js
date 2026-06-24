@@ -143,6 +143,36 @@ function showToast(message) {
   setTimeout(() => toast.remove(), 2800);
 }
 
+
+function demoDataButton(hasData = false) {
+  const label = hasData ? 'Reset Demo Data' : 'Load Demo Data';
+  return `<button class="btn secondary" data-load-demo data-replace-existing="${hasData ? 'true' : 'false'}">${svgIcon('upload')}${label}</button>`;
+}
+
+function bindDemoSeedButtons(root = document) {
+  root.querySelectorAll('[data-load-demo]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const replacesData = button.dataset.replaceExisting === 'true';
+      if (replacesData && !window.confirm('Replace the current data with the synthetic demo set?')) return;
+      const original = button.innerHTML;
+      button.disabled = true;
+      button.innerHTML = `${svgIcon('upload')}Loading...`;
+      try {
+        await api('/api/demo/load-seed', { method: 'POST' });
+        showToast('Synthetic demo data loaded');
+        if (window.location.pathname === '/') {
+          navigate('/dashboard');
+        } else {
+          render();
+        }
+      } catch (error) {
+        showToast(error.message || 'Unable to load demo data');
+        button.disabled = false;
+        button.innerHTML = original;
+      }
+    });
+  });
+}
 function bindLinks(root = document) {
   root.querySelectorAll('[data-link]').forEach((link) => {
     link.addEventListener('click', (event) => {
@@ -180,8 +210,8 @@ function renderLanding() {
             <h1>Engagement Budget Tracker</h1>
             <p>Track budgets, Cognos imports, weekly snapshots, projected fees, and export-ready budget reporting from one focused control center.</p>
             <div class="landing-actions">
-              <a class="btn primary landing-cta" href="/dashboard" data-link>${svgIcon('file')}Open Dashboard</a>
-              <a class="btn ghost landing-cta" href="/engagements/new" data-link>${svgIcon('plus')}Start Engagement</a>
+              <button class="btn primary landing-cta" data-load-demo>${svgIcon('upload')}Load Demo Data</button>
+              <a class="btn ghost landing-cta" href="/dashboard" data-link>${svgIcon('file')}Open Dashboard</a>
             </div>
           </div>
           <div class="landing-visual" aria-label="Engagement budget dashboard preview">
@@ -223,16 +253,20 @@ function renderLanding() {
     </div>
   `;
   bindLinks();
+  bindDemoSeedButtons();
 }
+
 async function renderDashboard() {
-  setPage('Dashboard', loadingCard(), `<a class="btn primary" href="/engagements/new" data-link>${svgIcon('plus')}New Engagement</a>`);
+  setPage('Dashboard', loadingCard(), `${demoDataButton()}<a class="btn primary" href="/engagements/new" data-link>${svgIcon('plus')}New Engagement</a>`);
   bindLinks();
+  bindDemoSeedButtons();
   try {
     const data = await api('/api/engagements');
     const metrics = data.metrics;
+    const hasEngagements = data.engagements.length > 0;
     const cards = data.engagements
       .map((engagement) => engagementCard(engagement))
-      .join('') || '<div class="empty">No engagements yet.</div>';
+      .join('') || `<div class="empty stack"><strong>No engagements yet.</strong><span>Load the synthetic demo set or start a blank engagement.</span>${demoDataButton(false)}</div>`;
     setPage(
       'Dashboard',
       `
@@ -244,9 +278,10 @@ async function renderDashboard() {
       </div>
       <div class="grid card-grid" style="margin-top:16px">${cards}</div>
       `,
-      `<a class="btn primary" href="/engagements/new" data-link>${svgIcon('plus')}New Engagement</a>`
+      `${demoDataButton(hasEngagements)}<a class="btn primary" href="/engagements/new" data-link>${svgIcon('plus')}New Engagement</a>`
     );
     bindLinks();
+    bindDemoSeedButtons();
   } catch (error) {
     setPage('Dashboard', `<div class="card">${escapeHtml(error.message)}</div>`);
   }

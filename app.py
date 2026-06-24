@@ -9,7 +9,7 @@ from typing import Any
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
 from calculations import as_float, dashboard, engagement_metrics, phase_summary, team_summary
-from db import connect, db_path, get_rates, init_db, now_iso, row_to_dict, rows_to_dicts, set_rates
+from db import connect, db_path, get_rates, init_db, load_seed_database, now_iso, row_to_dict, rows_to_dicts, set_rates
 from exports import build_excel, build_html_report
 from importers import parse_text_export, parse_xlsx_export, preview_rows, validate_columns
 
@@ -66,6 +66,11 @@ def create_app(database_path: str | None = None) -> Flask:
     def health():
         return ok({"status": "ok", "db_path": app.config["DATABASE_PATH"]})
 
+    @app.post("/api/demo/load-seed")
+    def load_demo_seed():
+        load_seed_database(Path(app.config["DATABASE_PATH"]))
+        with conn() as db:
+            return ok(dashboard(db))
     @app.get("/api/engagements")
     def list_engagements():
         with conn() as db:

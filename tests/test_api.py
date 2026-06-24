@@ -79,6 +79,21 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(weekly[0]["hours"], 3.0)
         self.assertEqual(weekly[0]["entries"], 2)
 
+    def test_demo_seed_loads_on_demand(self):
+        empty = self.client.get("/api/engagements")
+        self.assertEqual(empty.status_code, 200)
+        self.assertEqual(empty.json["data"]["engagements"], [])
+
+        loaded = self.client.post("/api/demo/load-seed")
+        self.assertEqual(loaded.status_code, 200)
+        data = loaded.json["data"]
+        codes = sorted(item["engagement_code"] for item in data["engagements"])
+        self.assertEqual(codes, ["DEMO-ALPHA-001", "DEMO-BETA-002", "DEMO-GAMMA-003"])
+        self.assertEqual(data["metrics"]["watch_or_over_budget"], 0)
+
+        reloaded = self.client.post("/api/demo/load-seed")
+        self.assertEqual(reloaded.status_code, 200)
+        self.assertEqual(len(reloaded.json["data"]["engagements"]), 3)
     def _engagement_payload(self, code: str):
         return {
             "engagement": {

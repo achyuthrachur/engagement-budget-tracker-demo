@@ -218,7 +218,7 @@ def dashboard(conn: sqlite3.Connection) -> dict[str, Any]:
         metrics = engagement_metrics(conn, int(item["id"]))
         item["metrics"] = metrics
         item["last_import_date"] = row["last_import_date"]
-        if metrics.get("status") in {"Watch", "Over Budget"}:
+        if item.get("status") != "Closed" and metrics.get("status") in {"Watch", "Over Budget"}:
             risk_count += 1
         cards.append(item)
 

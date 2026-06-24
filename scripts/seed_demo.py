@@ -134,10 +134,9 @@ def seed():
         ]:
             insert_week(conn, alpha, week, rows)
 
-        beta = insert_engagement(conn, "DEMO-BETA-002", "Demo Client Beta", 18000, change_order=2500, c360=750)
+        beta = insert_engagement(conn, "DEMO-BETA-002", "Demo Client Beta", 25000, change_order=2500, c360=750)
         insert_team(conn, beta, [("Consultant Four", "Manager", 350, 350, 30), ("Analyst Five", "Staff", 225, 225, 45), ("Reviewer Six", "Senior Manager", 500, 500, 8)])
         insert_phases(conn, beta)
-        insert_adjustment(conn, beta, "2026-04-24", "change_order", 2500, "Synthetic scope expansion")
         for week, rows in [
             ("2026-04-11", [("Consultant Four", "Manager", "2026-04-08", "Planning", 4.0, 350, "Planning"), ("Analyst Five", "Staff", "2026-04-09", "Fieldwork", 6.0, 225, "Data prep")]),
             ("2026-04-18", [("Consultant Four", "Manager", "2026-04-15", "Fieldwork", 7.0, 350, "Analysis"), ("Analyst Five", "Staff", "2026-04-16", "Fieldwork", 11.0, 225, "Testing")]),
@@ -145,7 +144,7 @@ def seed():
         ]:
             insert_week(conn, beta, week, rows)
 
-        gamma = insert_engagement(conn, "DEMO-GAMMA-003", "Demo Client Gamma", 12500, status="Closed")
+        gamma = insert_engagement(conn, "DEMO-GAMMA-003", "Demo Client Gamma", 15000, status="Closed")
         insert_team(conn, gamma, [("Advisor Seven", "Manager", 350, 350, 20), ("Analyst Eight", "Senior Staff", 300, 300, 24)])
         insert_phases(conn, gamma)
         insert_adjustment(conn, gamma, "2026-03-22", "markdown", 500, "Synthetic final discount")

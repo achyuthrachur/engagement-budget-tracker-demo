@@ -11,8 +11,8 @@ python app.py
 
 Open `http://localhost:5000`.
 
-The app creates `budget_tracker.db` from `demo_seed.db` on first run. Delete `budget_tracker.db` to reset the local demo data.
+The app starts with an empty `budget_tracker.db`. Use the **Load Demo Data** button to copy the synthetic dataset from `demo_seed.db`. Delete `budget_tracker.db` to reset the local demo data.
 
 ## Vercel
 
-This repository includes `api/index.py` and `vercel.json` for Vercel deployment. The Vercel demo copies `demo_seed.db` to `/tmp` on cold start, so data may reset between serverless instances.
+This repository includes `api/index.py` and `vercel.json` for Vercel deployment. The Vercel demo starts empty in `/tmp`; use **Load Demo Data** to populate the synthetic dataset. Data may reset between serverless instances.

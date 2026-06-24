@@ -67,9 +67,6 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
 def init_db(path: Path | None = None) -> Path:
     target = path or db_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    seed = seed_path()
-    if (path is None or target.resolve() == db_path().resolve()) and not target.exists() and seed.exists() and seed.resolve() != target.resolve():
-        shutil.copyfile(seed, target)
     with connect(target) as conn:
         conn.executescript(schema_path().read_text(encoding="utf-8"))
         conn.execute(
@@ -78,6 +75,19 @@ def init_db(path: Path | None = None) -> Path:
         )
     return target
 
+def load_seed_database(path: Path | None = None) -> Path:
+    target = path or db_path()
+    seed = seed_path()
+    if not seed.exists():
+        raise FileNotFoundError(f"Demo seed database not found: {seed}")
+    if seed.resolve() == target.resolve():
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_target = target.with_name(f"{target.name}.loading")
+    shutil.copyfile(seed, temp_target)
+    os.replace(temp_target, target)
+    init_db(target)
+    return target
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
