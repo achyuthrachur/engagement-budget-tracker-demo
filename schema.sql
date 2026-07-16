@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS team_members (
   name              TEXT NOT NULL,
   role              TEXT,
   is_offshore       INTEGER DEFAULT 0 CHECK (is_offshore IN (0, 1)),
+  is_active         INTEGER DEFAULT 1 CHECK (is_active IN (0, 1)),
   internal_rate     REAL DEFAULT 0,
   engagement_rate   REAL DEFAULT 0,
   contract_rate     REAL DEFAULT 0,
@@ -167,3 +168,13 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS engagement_events (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  engagement_id     INTEGER NOT NULL REFERENCES engagements(id) ON DELETE CASCADE,
+  event_type        TEXT NOT NULL,
+  description       TEXT NOT NULL,
+  created_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_engagement_events
+  ON engagement_events(engagement_id, created_at DESC);

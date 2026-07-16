@@ -160,7 +160,7 @@ def preview_rows(
     team_names = {
         row["name"]
         for row in conn.execute(
-            "SELECT name FROM team_members WHERE engagement_id = ?", (engagement_id,)
+            "SELECT name FROM team_members WHERE engagement_id = ? AND COALESCE(is_active,1)=1", (engagement_id,)
         ).fetchall()
     }
     existing_ids = {
@@ -217,6 +217,7 @@ def preview_rows(
             included = False
         elif project_id and project_id != engagement["engagement_code"]:
             flag = "project_mismatch"
+            included = False
         if flag:
             flags.append(flag)
         if matched_phase_id is None:

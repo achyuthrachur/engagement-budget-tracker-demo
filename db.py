@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_RATES = {
     "Partner FY26": 900,
     "Managing Director FY26": 750,
@@ -46,9 +46,19 @@ def app_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
+def data_dir() -> Path:
+    override = os.environ.get("BUDGET_TRACKER_DATA_DIR")
+    if override:
+        return Path(override).resolve()
+    if getattr(sys, "frozen", False):
+        base = Path(os.environ.get("LOCALAPPDATA") or app_dir())
+        return base / "Crowe" / "B2A Budget Tracker"
+    return app_dir()
+
+
 def db_path() -> Path:
     override = os.environ.get("BUDGET_TRACKER_DB")
-    return Path(override).resolve() if override else app_dir() / "budget_tracker.db"
+    return Path(override).resolve() if override else data_dir() / "budget_tracker.db"
 
 
 def seed_path() -> Path:
@@ -93,6 +103,11 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
 
 def init_db(path: Path | None = None) -> Path:
     target = path or db_path()
+    if getattr(sys, "frozen", False) and not target.exists():
+        portable = app_dir() / "budget_tracker.db"
+        if portable.exists() and portable.resolve() != target.resolve():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(portable, target)
     target.parent.mkdir(parents=True, exist_ok=True)
     with connect(target) as conn:
         legacy = _table_exists(conn, "engagements") and "complexity_mode" not in _columns(
@@ -107,6 +122,8 @@ def init_db(path: Path | None = None) -> Path:
 
     with connect(target) as conn:
         conn.executescript(schema_path().read_text(encoding="utf-8"))
+        if "is_active" not in _columns(conn, "team_members"):
+            conn.execute("ALTER TABLE team_members ADD COLUMN is_active INTEGER DEFAULT 1 CHECK (is_active IN (0,1))")
         for key, value in DEFAULT_SETTINGS.items():
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (key, value))
         conn.execute(
@@ -181,3 +198,27 @@ def backup_database(destination: Path) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(db_path(), destination)
     return destination
+
+
+def automatic_backup(path: Path | None = None, label: str = "automatic") -> Path | None:
+    source = path or db_path()
+    if not source.exists():
+        return None
+    folder = source.parent / "Backups"
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    destination = folder / f"budget_tracker_{label}_{stamp}.db"
+    shutil.copy2(source, destination)
+    backups = sorted(folder.glob("budget_tracker_*.db"), key=lambda item: item.stat().st_mtime, reverse=True)
+    for stale in backups[20:]:
+        stale.unlink(missing_ok=True)
+    return destination
+
+
+def latest_backup(path: Path | None = None) -> Path | None:
+    source = path or db_path()
+    folder = source.parent / "Backups"
+    if not folder.exists():
+        return None
+    backups = sorted(folder.glob("budget_tracker_*.db"), key=lambda item: item.stat().st_mtime, reverse=True)
+    return backups[0] if backups else None

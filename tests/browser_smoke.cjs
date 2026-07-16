@@ -1,4 +1,5 @@
 const { chromium } = require('playwright');
+const baseUrl = process.env.BUDGET_TRACKER_TEST_URL || 'http://127.0.0.1:8877';
 
 (async () => {
   let browser;
@@ -10,7 +11,7 @@ const { chromium } = require('playwright');
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
   page.on('pageerror', (error) => errors.push(error.message));
 
-  await page.goto('http://127.0.0.1:8877/engagements/new');
+  await page.goto(`${baseUrl}/engagements/new`);
   await page.getByLabel('Engagement code').fill(`UI-SMOKE-${Date.now()}`);
   await page.getByLabel('Client name').fill('Browser Smoke Client');
   await page.getByLabel('Complexity mode').selectOption('complex');
@@ -25,6 +26,7 @@ const { chromium } = require('playwright');
   await page.locator('[data-phase="0:sow_fees"]').fill('12000');
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByRole('button', { name: 'Distribute' }).click();
+  await page.locator('#baseline-confirm').check();
   await page.getByRole('button', { name: 'Create engagement' }).click();
   await page.waitForURL(/\/engagements\/\d+$/);
   await page.getByRole('heading', { name: 'Phase breakdown' }).waitFor();
@@ -37,6 +39,13 @@ const { chromium } = require('playwright');
   await page.setViewportSize({ width: 375, height: 812 });
   await page.reload();
   await page.getByRole('heading', { name: 'Weekly budget, actual and forecast' }).waitFor();
+  await page.setViewportSize({ width: 768, height: 900 });
+  await page.goto(`${baseUrl}/help`);
+  await page.getByRole('heading', { name: 'Run the weekly budget' }).waitFor();
+  await page.goto(`${baseUrl}/dashboard`);
+  await page.getByRole('heading', { name: 'Welcome to the B2A Budget Tracker' }).waitFor();
+  await page.getByRole('link', { name: 'Review settings' }).waitFor();
+  await page.getByRole('button', { name: 'I understand' }).waitFor();
   console.log('browser smoke passed');
   } finally {
     await browser?.close();

@@ -125,7 +125,9 @@ class ImporterTests(unittest.TestCase):
         self.assertEqual(flags["UNK"], "worker_unknown")
         self.assertEqual(flags["ZERO"], "zero_hours")
         self.assertEqual(flags["DUP"], "duplicate")
-        self.assertEqual(preview["summary"]["to_import"], 2)
+        self.assertEqual(preview["summary"]["to_import"], 1)
+        mismatch = next(row for row in preview["rows"] if row["transaction_id"] == "MIS")
+        self.assertFalse(mismatch["included"])
 
     def test_parse_tab_delimited_export(self):
         line = "\t".join(EXPECTED_COLUMNS)

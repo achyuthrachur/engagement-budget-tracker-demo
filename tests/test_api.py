@@ -36,6 +36,16 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(len(data["phases"]), 3)
         self.assertEqual(sum(p["sow_fees"] for p in data["phases"]), 18000)
 
+    def test_complex_weekly_budget_must_reconcile_to_team_target(self):
+        payload = self.complex_payload("C-RECON", 1)
+        payload["weekly_budgets"] = [{
+            "phase_index": 0, "team_index": 0,
+            "week_start_date": "2026-07-06", "budgeted_hours": 10
+        }]
+        response = self.client.post("/api/engagements", json=payload)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json["error"]["code"], "budget_reconciliation_error")
+
     def test_change_order_requires_owned_phase(self):
         data = self.create_complex("C-2")
         eid = data["engagement"]["id"]
@@ -106,16 +116,21 @@ class ApiTests(unittest.TestCase):
         self.assertIn("variance_flagged", preview["rows"][0]["flags"])
         self.assertTrue(preview["rows"][0]["included"])
 
-    def test_active_roster_cannot_bypass_budget_lock(self):
+    def test_active_roster_addition_requires_reason_and_is_audited(self):
         data = self.create_complex("C-7")
         eid = data["engagement"]["id"]
         self.preview(eid, [self.import_row("T1", "A", "2026-07-12", 8, 800, 600)])
         self.client.post(f"/api/engagements/{eid}/import/commit", json={})
-        blocked = self.client.post(f"/api/engagements/{eid}/team", json={
+        missing_reason = self.client.post(f"/api/engagements/{eid}/team", json={
             "name": "Jones, Alex", "role": "Senior", "budgeted_hours": 80
         })
-        self.assertEqual(blocked.status_code, 409)
-        self.assertEqual(blocked.json["error"]["code"], "budget_locked")
+        self.assertEqual(missing_reason.status_code, 400)
+        added = self.client.post(f"/api/engagements/{eid}/team", json={
+            "name": "Jones, Alex", "role": "Senior", "reason": "Approved staffing change"
+        })
+        self.assertEqual(added.status_code, 201)
+        revisions = self.client.get(f"/api/engagements/{eid}/revisions").json["data"]
+        self.assertEqual(revisions[0]["field_name"], "team_member_added")
 
     def test_closed_engagement_mutations_are_rejected(self):
         data = self.create_complex("C-8")
@@ -123,7 +138,9 @@ class ApiTests(unittest.TestCase):
         expense = self.client.post(f"/api/engagements/{eid}/expenses", json={
             "expense_type": "crowe_paid", "amount": 100
         }).json["data"][0]
-        self.assertEqual(self.client.put(f"/api/engagements/{eid}", json={"status": "closed"}).status_code, 200)
+        self.assertEqual(self.client.put(f"/api/engagements/{eid}", json={
+            "status": "closed", "reason": "Engagement complete"
+        }).status_code, 200)
         mutations = [
             self.client.put(f"/api/engagements/{eid}/phases/{phase_id}", json={"phase_name": "Changed"}),
             self.client.delete(f"/api/engagements/{eid}/expenses/{expense['id']}"),
@@ -138,6 +155,21 @@ class ApiTests(unittest.TestCase):
         loaded = self.client.post("/api/demo/load-seed")
         self.assertEqual(loaded.status_code, 200)
         self.assertEqual(len(loaded.json["data"]["engagements"]), 3)
+
+    def test_database_backup_can_be_validated_and_restored(self):
+        original = self.client.post("/api/engagements", json=self.simple_payload("BACKUP-1"))
+        self.assertEqual(original.status_code, 201)
+        backup = self.client.post("/api/settings/backup", json={}).json["data"]
+        self.client.post("/api/engagements", json=self.simple_payload("BACKUP-2"))
+        with open(backup["path"], "rb") as handle:
+            restored = self.client.post("/api/settings/restore", data={
+                "file": (handle, "known-good.db")
+            }, content_type="multipart/form-data")
+        self.assertEqual(restored.status_code, 200)
+        codes = [item["engagement_code"] for item in
+                 self.client.get("/api/engagements").json["data"]["engagements"]]
+        self.assertIn("BACKUP-1", codes)
+        self.assertNotIn("BACKUP-2", codes)
 
     def create_complex(self, code):
         return self.client.post("/api/engagements", json=self.complex_payload(code, 1)).json["data"]
@@ -163,7 +195,7 @@ class ApiTests(unittest.TestCase):
 
     def import_row(self, transaction_id, phase, week_end, hours, std_fees, contract_fees):
         return [transaction_id,"W1","Smith, Jane","Manager FY26","BU","CC","2026-07-06",
-                week_end,"2026-07","C-IGNORED","Project","X",phase,"Task","Remote","Billable",
+                week_end,"2026-07","","Project","X",phase,"Task","Remote","Billable",
                 hours,std_fees,contract_fees,"Memo"]
 
 

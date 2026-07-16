@@ -41,7 +41,13 @@ node .\tests\browser_smoke.cjs
 .\build.bat
 ```
 
-The build produces `budget_tracker.exe` beside `launch.bat`. Keep those two files together and run `launch.bat`; it selects the first free port from 5000–5004, starts the app, and opens the browser. The SQLite database is stored beside the executable.
+The build produces a `release` folder containing the executable, launcher, installer and quick-start guide. Run `install.bat` for a standard-user installation and desktop shortcut.
+
+Production data is stored under `%LOCALAPPDATA%\Crowe\B2A Budget Tracker`, separate from the installed executable so an application update cannot overwrite the database. The launcher reuses an existing tracker process when one is already running.
+
+## Release status
+
+The application includes first-run guidance, a permanent Help center, safe import defaults, automatic recovery backups, validated restore, governed active-engagement changes and plain-language weekly instructions. Organizational code signing and observed user-acceptance signoff remain release-owner responsibilities.
 
 ## Deployment
 

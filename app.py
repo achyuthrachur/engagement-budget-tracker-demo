@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import sqlite3
-import urllib.parse
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -11,12 +10,14 @@ from flask import Flask, Response, jsonify, render_template, request, send_file
 
 from calculations import (apply_grid_variance, as_float, dashboard, engagement_metrics,
                           phase_summary, phase_weekly_grid, team_summary)
-from db import (connect, db_path, get_app_settings, init_db, load_seed_database,
-                now_iso, row_to_dict, rows_to_dicts, set_rates, set_setting)
+from db import (SCHEMA_VERSION, automatic_backup, connect, db_path, get_app_settings,
+                init_db, latest_backup, load_seed_database, now_iso, row_to_dict,
+                rows_to_dicts, set_rates, set_setting)
 from exports import build_excel, build_html_report
 from importers import parse_text_export, parse_xlsx_export, preview_rows, validate_columns
 
 IMPORT_PREVIEWS: dict[int, list[dict[str, Any]]] = {}
+APP_VERSION = "3.0.0"
 ADJUSTMENT_TYPES = {"markdown", "c360", "bima", "change_order"}
 RATE_FIELDS = {"internal_rate", "engagement_rate", "contract_rate", "dte_rate"}
 
@@ -44,12 +45,14 @@ def create_app(database_path: str | None = None) -> Flask:
     @app.get("/engagements/new")
     @app.get("/engagements/<path:_path>")
     @app.get("/settings")
+    @app.get("/help")
     def index(_path=None):
-        return render_template("index.html", db_error=app.config["DB_ERROR"])
+        return render_template("index.html", db_error=app.config["DB_ERROR"], app_version=APP_VERSION)
 
     @app.get("/api/health")
     def health():
-        return ok({"status": "ok", "db_path": app.config["DATABASE_PATH"], "schema_version": 2})
+        return ok({"status": "ok", "app_version": APP_VERSION,
+                   "db_path": app.config["DATABASE_PATH"], "schema_version": SCHEMA_VERSION})
 
     @app.post("/api/demo/load-seed")
     def load_demo_seed():
@@ -88,6 +91,16 @@ def create_app(database_path: str | None = None) -> Flask:
                     return fail("first_monday must be a Monday", 400, "validation_error", ["first_monday"])
             except ValueError:
                 return fail("first_monday must be an ISO date", 400, "validation_error", ["first_monday"])
+            weekly_rows = payload.get("weekly_budgets") or []
+            if weekly_rows:
+                for index, member in enumerate(payload.get("team") or []):
+                    target = as_float(member.get("budgeted_hours"))
+                    planned = sum(as_float(row.get("budgeted_hours")) for row in weekly_rows
+                                  if int(row.get("team_index", -1)) == index)
+                    if abs(target-planned) > 0.01:
+                        return fail("Weekly budget must reconcile to each team member target",
+                                    400, "budget_reconciliation_error",
+                                    [f"team[{index}].budgeted_hours"])
         for member in payload.get("team", []):
             member_error = validate_member(member)
             if member_error:
@@ -118,7 +131,8 @@ def create_app(database_path: str | None = None) -> Flask:
             engagement = get_engagement_row(db, eid)
             if not engagement:
                 return fail("Not found", 404, "not_found")
-            reopening = set(payload) == {"status"} and str(payload.get("status")).lower() == "active"
+            requested_status = str(payload.get("status") or "").lower()
+            reopening = requested_status == "active"
             if engagement["status"] == "closed" and not reopening:
                 return fail("Closed engagements are read-only", 409, "engagement_closed")
             if engagement["complexity_mode"] == "complex" and payload.get("complexity_mode") == "simple":
@@ -130,6 +144,13 @@ def create_app(database_path: str | None = None) -> Flask:
                 updates["status"] = str(updates["status"]).lower()
                 if updates["status"] not in {"planning", "active", "closed"}:
                     return fail("Invalid engagement status", 400, "validation_error", ["status"])
+                if updates["status"] != engagement["status"]:
+                    reason = str(payload.get("reason") or "").strip()
+                    if updates["status"] in {"active", "closed"} and not reason:
+                        return fail("A reason is required for this status change", 400, "validation_error", ["reason"])
+                    automatic_backup(Path(app.config["DATABASE_PATH"]), "status")
+                    record_event(db, eid, f"status_{updates['status']}",
+                                 reason or f"Status changed from {engagement['status']} to {updates['status']}")
             updates["updated_at"] = now_iso()
             assignments = ", ".join(f"{key}=:{key}" for key in updates)
             updates["id"] = eid
@@ -138,12 +159,13 @@ def create_app(database_path: str | None = None) -> Flask:
 
     @app.delete("/api/engagements/<int:eid>")
     def delete_engagement(eid):
+        backup_path = automatic_backup(Path(app.config["DATABASE_PATH"]), "pre_engagement_delete")
         with conn() as db:
             cursor = db.execute("DELETE FROM engagements WHERE id=?", (eid,))
             if not cursor.rowcount:
                 return fail("Not found", 404, "not_found")
         IMPORT_PREVIEWS.pop(eid, None)
-        return ok({"deleted": True})
+        return ok({"deleted": True, "backup_path": str(backup_path) if backup_path else None})
 
     @app.get("/api/engagements/<int:eid>/team")
     def get_team(eid):
@@ -158,9 +180,15 @@ def create_app(database_path: str | None = None) -> Flask:
             engagement = get_engagement_row(db, eid)
             if not engagement:
                 return fail("Not found", 404, "not_found")
-            if engagement["status"] != "planning":
-                return fail("Team members can only be added while planning", 409, "budget_locked")
+            if engagement["status"] == "closed":
+                return fail("Closed engagements are read-only", 409, "engagement_closed")
+            reason = str(payload.get("reason") or "").strip()
+            if engagement["status"] == "active" and not reason:
+                return fail("A reason is required when adding a worker after activation",
+                            400, "validation_error", ["reason"])
             try:
+                if engagement["status"] == "active":
+                    automatic_backup(Path(app.config["DATABASE_PATH"]), "team")
                 for member in members:
                     error = validate_member(member)
                     if error:
@@ -170,6 +198,13 @@ def create_app(database_path: str | None = None) -> Flask:
                         phase = db.execute("SELECT id FROM phases WHERE engagement_id=? AND is_default=1", (eid,)).fetchone()
                         db.execute("INSERT INTO phase_person_weeks (phase_id,team_member_id,budgeted_hours) VALUES (?,?,?)",
                                    (phase["id"], member_id, as_float(member.get("budgeted_hours"))))
+                    if engagement["status"] == "active":
+                        db.execute("""INSERT INTO budget_revisions
+                            (engagement_id,team_member_id,field_name,old_value,new_value,reason,revised_at)
+                            VALUES (?,?,?,?,?,?,?)""",
+                            (eid, member_id, "team_member_added", 0, 1, reason, now_iso()))
+                        record_event(db, eid, "team_member_added",
+                                     f"{member.get('name')} added after activation: {reason}")
                 touch(db, eid)
                 return ok(team_summary(db, eid), 201)
             except sqlite3.IntegrityError:
@@ -178,7 +213,7 @@ def create_app(database_path: str | None = None) -> Flask:
     @app.put("/api/engagements/<int:eid>/team/<int:member_id>")
     def update_member(eid, member_id):
         payload = request.get_json(silent=True) or {}
-        allowed = {"name", "role", "is_offshore", *RATE_FIELDS}
+        allowed = {"name", "role", "is_offshore", "is_active", *RATE_FIELDS}
         updates = {key: payload[key] for key in allowed if key in payload}
         with conn() as db:
             engagement = get_engagement_row(db, eid)
@@ -186,23 +221,28 @@ def create_app(database_path: str | None = None) -> Flask:
                 return fail("Not found", 404, "not_found")
             if engagement["status"] == "closed":
                 return fail("Closed engagements are read-only", 409, "engagement_closed")
-            locked = RATE_FIELDS.intersection(updates) and engagement["status"] != "planning"
-            if locked:
-                return budget_locked(eid, "team_member", member_id)
+            current = db.execute("SELECT * FROM team_members WHERE id=? AND engagement_id=?",
+                                 (member_id, eid)).fetchone()
+            if not current:
+                return fail("Not found", 404, "not_found")
             if "name" in updates and not valid_worker_name(str(updates["name"])):
                 return fail("Name must use Last, First format", 400, "validation_error", ["name"])
             for key in RATE_FIELDS:
                 if key in updates:
                     updates[key] = as_float(updates[key])
+            locked_fields = [key for key in RATE_FIELDS if key in updates
+                             and as_float(current[key]) != as_float(updates[key])]
+            if locked_fields and engagement["status"] != "planning":
+                return budget_locked(eid, "team_member", member_id, locked_fields[0])
             if "is_offshore" in updates:
                 updates["is_offshore"] = int(bool(updates["is_offshore"]))
+            if "is_active" in updates:
+                updates["is_active"] = int(bool(updates["is_active"]))
             if not updates:
                 return fail("No fields to update", 400, "validation_error")
             updates.update({"id": member_id, "eid": eid})
             assignments = ", ".join(f"{key}=:{key}" for key in updates if key not in {"id", "eid"})
             cursor = db.execute(f"UPDATE team_members SET {assignments} WHERE id=:id AND engagement_id=:eid", updates)
-            if not cursor.rowcount:
-                return fail("Not found", 404, "not_found")
             touch(db, eid)
             return ok(team_summary(db, eid))
 
@@ -256,10 +296,14 @@ def create_app(database_path: str | None = None) -> Flask:
                 return fail("Not found", 404, "not_found")
             if engagement["status"] == "closed":
                 return fail("Closed engagements are read-only", 409, "engagement_closed")
-            if "sow_fees" in updates and engagement["status"] != "planning":
-                return budget_locked(eid, "phase", phase_id)
             if "sow_fees" in updates:
                 updates["sow_fees"] = as_float(updates["sow_fees"])
+                current = db.execute("SELECT sow_fees FROM phases WHERE id=? AND engagement_id=?",
+                                     (phase_id, eid)).fetchone()
+                if not current:
+                    return fail("Not found", 404, "not_found")
+                if engagement["status"] != "planning" and as_float(current["sow_fees"]) != updates["sow_fees"]:
+                    return budget_locked(eid, "phase", phase_id, "sow_fees")
             updates.update({"id": phase_id, "eid": eid})
             assignments = ", ".join(f"{key}=:{key}" for key in updates if key not in {"id", "eid"})
             if not assignments:
@@ -411,6 +455,7 @@ def create_app(database_path: str | None = None) -> Flask:
 
     @app.delete("/api/engagements/<int:eid>/adjustments/<int:adj_id>")
     def delete_adjustment(eid, adj_id):
+        backup_path = automatic_backup(Path(app.config["DATABASE_PATH"]), "pre_adjustment_delete")
         with conn() as db:
             engagement = get_engagement_row(db, eid)
             if not engagement:
@@ -419,7 +464,10 @@ def create_app(database_path: str | None = None) -> Flask:
                 return fail("Closed engagements are read-only", 409, "engagement_closed")
             cursor = db.execute("DELETE FROM budget_adjustments WHERE id=? AND engagement_id=?", (adj_id, eid))
             sync_adjustment_columns(db, eid)
-            return ok({"deleted": True}) if cursor.rowcount else fail("Not found", 404, "not_found")
+            if cursor.rowcount:
+                record_event(db, eid, "adjustment_deleted", f"Deleted budget adjustment {adj_id}")
+                return ok({"deleted": True, "backup_path": str(backup_path) if backup_path else None})
+            return fail("Not found", 404, "not_found")
 
     @app.get("/api/engagements/<int:eid>/revisions")
     def get_revisions(eid):
@@ -455,6 +503,7 @@ def create_app(database_path: str | None = None) -> Flask:
                 return fail("Revision target not found", 404, "not_found")
             old = as_float(row[field])
             new = as_float(payload.get("new_value"))
+            automatic_backup(Path(app.config["DATABASE_PATH"]), "pre_revision")
             phase_id = target_id if target_type == "phase" else row["phase_id"] if "phase_id" in row.keys() else None
             values = {"engagement_id": eid, "phase_id": phase_id, "team_member_id": None,
                       "phase_person_week_id": None, "field_name": field, "old_value": old,
@@ -466,6 +515,8 @@ def create_app(database_path: str | None = None) -> Flask:
                 VALUES (:engagement_id,:phase_id,:team_member_id,:phase_person_week_id,:field_name,
                         :old_value,:new_value,:reason,:revised_at)""", values)
             db.execute(f"UPDATE {table} SET {field}=? WHERE id=?", (new, target_id))
+            record_event(db, eid, "budget_revised",
+                         f"{field} changed from {old} to {new}: {reason}")
             touch(db, eid)
             return ok(list_revisions(db, eid), 201)
 
@@ -496,6 +547,7 @@ def create_app(database_path: str | None = None) -> Flask:
 
     @app.delete("/api/engagements/<int:eid>/expenses/<int:expense_id>")
     def delete_expense(eid, expense_id):
+        backup_path = automatic_backup(Path(app.config["DATABASE_PATH"]), "pre_expense_delete")
         with conn() as db:
             engagement = get_engagement_row(db, eid)
             if not engagement:
@@ -503,7 +555,10 @@ def create_app(database_path: str | None = None) -> Flask:
             if engagement["status"] == "closed":
                 return fail("Closed engagements are read-only", 409, "engagement_closed")
             cursor = db.execute("DELETE FROM expenses WHERE id=? AND engagement_id=?", (expense_id, eid))
-            return ok({"deleted": True}) if cursor.rowcount else fail("Not found", 404, "not_found")
+            if cursor.rowcount:
+                record_event(db, eid, "expense_deleted", f"Deleted expense {expense_id}")
+                return ok({"deleted": True, "backup_path": str(backup_path) if backup_path else None})
+            return fail("Not found", 404, "not_found")
 
     @app.post("/api/engagements/<int:eid>/import/preview")
     def import_preview(eid):
@@ -549,7 +604,10 @@ def create_app(database_path: str | None = None) -> Flask:
             IMPORT_PREVIEWS.pop(eid, None)
             return ok({"snapshot_id": None, "imported": 0, "skipped": len(rows),
                        "duplicates": preview_duplicates, "row_count": 0})
+        backup_path = automatic_backup(Path(app.config["DATABASE_PATH"]), "pre_import")
         with conn() as db:
+            engagement = get_engagement_row(db, eid)
+            was_planning = bool(engagement and engagement["status"] == "planning")
             for phase_id in {row.get("matched_phase_id") for row in selected if row.get("matched_phase_id")}:
                 if not phase_owned(db, eid, phase_id):
                     return fail("Phase assignment does not belong to engagement", 400, "scope_mismatch")
@@ -573,12 +631,17 @@ def create_app(database_path: str | None = None) -> Flask:
                 db.execute("UPDATE weekly_snapshots SET row_count=? WHERE id=?", (imported, snapshot_id))
                 db.execute("UPDATE engagements SET status='active', updated_at=? WHERE id=? AND status='planning'",
                            (now_iso(), eid))
+                record_event(db, eid, "import_committed",
+                             f"Imported {imported} Cognos rows for week ending {week_end}")
+                if was_planning:
+                    record_event(db, eid, "status_active", "Baseline locked by first committed import")
             else:
                 db.execute("DELETE FROM weekly_snapshots WHERE id=?", (snapshot_id,))
                 snapshot_id = None
         IMPORT_PREVIEWS.pop(eid, None)
         return ok({"snapshot_id": snapshot_id, "imported": imported, "skipped": len(rows)-imported,
-                   "duplicates": preview_duplicates+commit_duplicates, "row_count": imported}, 201 if imported else 200)
+                   "duplicates": preview_duplicates+commit_duplicates, "row_count": imported,
+                   "backup_path": str(backup_path) if backup_path else None}, 201 if imported else 200)
 
     @app.get("/api/engagements/<int:eid>/unmatched-phases")
     def unmatched_phases(eid):
@@ -626,6 +689,7 @@ def create_app(database_path: str | None = None) -> Flask:
 
     @app.delete("/api/engagements/<int:eid>/snapshots/<int:snapshot_id>")
     def delete_snapshot(eid, snapshot_id):
+        backup_path = automatic_backup(Path(app.config["DATABASE_PATH"]), "pre_snapshot_delete")
         with conn() as db:
             engagement = get_engagement_row(db, eid)
             if not engagement:
@@ -638,7 +702,8 @@ def create_app(database_path: str | None = None) -> Flask:
             remaining = db.execute("SELECT 1 FROM weekly_snapshots WHERE engagement_id=?", (eid,)).fetchone()
             if not remaining:
                 db.execute("UPDATE engagements SET status='planning' WHERE id=? AND status='active'", (eid,))
-            return ok({"deleted": True})
+            record_event(db, eid, "snapshot_deleted", f"Deleted import snapshot {snapshot_id}")
+            return ok({"deleted": True, "backup_path": str(backup_path) if backup_path else None})
 
     @app.get("/api/engagements/<int:eid>/export/excel")
     def export_excel(eid):
@@ -664,7 +729,11 @@ def create_app(database_path: str | None = None) -> Flask:
         with conn() as db:
             data = get_app_settings(db)
             path = Path(app.config["DATABASE_PATH"])
-            data.update({"db_path": str(path), "db_modified": path.stat().st_mtime if path.exists() else None})
+            recent = latest_backup(path)
+            data.update({"db_path": str(path), "db_modified": path.stat().st_mtime if path.exists() else None,
+                         "latest_backup_path": str(recent) if recent else None,
+                         "latest_backup_modified": recent.stat().st_mtime if recent else None,
+                         "schema_version": SCHEMA_VERSION, "app_version": APP_VERSION})
             return ok(data)
 
     @app.put("/api/settings/rates")
@@ -685,6 +754,39 @@ def create_app(database_path: str | None = None) -> Flask:
         if not path.exists():
             return fail("Database not found", 404, "not_found")
         return send_file(path, as_attachment=True, download_name=f"budget_tracker_backup_{now_iso()[:10]}.db")
+
+    @app.post("/api/settings/backup")
+    def create_backup():
+        path = Path(app.config["DATABASE_PATH"])
+        backup_path = automatic_backup(path, "manual")
+        return ok({"path": str(backup_path) if backup_path else None,
+                   "created_at": now_iso()})
+
+    @app.post("/api/settings/restore")
+    def restore_backup():
+        uploaded = request.files.get("file")
+        if not uploaded or not uploaded.filename:
+            return fail("Choose a database backup to restore", 400, "validation_error", ["file"])
+        path = Path(app.config["DATABASE_PATH"])
+        temp = path.with_name(f"{path.name}.restore")
+        try:
+            uploaded.save(temp)
+            candidate = sqlite3.connect(temp)
+            try:
+                integrity = candidate.execute("PRAGMA integrity_check").fetchone()[0]
+                tables = {row[0] for row in candidate.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            finally:
+                candidate.close()
+            if integrity != "ok" or not {"engagements", "settings", "schema_migrations"}.issubset(tables):
+                return fail("The selected file is not a valid tracker backup", 400, "invalid_backup")
+            preserved = automatic_backup(path, "pre_restore")
+            os.replace(temp, path)
+            init_db(path)
+            IMPORT_PREVIEWS.clear()
+            return ok({"restored": True, "preserved_backup": str(preserved) if preserved else None})
+        finally:
+            temp.unlink(missing_ok=True)
 
     return app
 
@@ -767,6 +869,7 @@ def insert_engagement_bundle(db, info, payload):
          info.get("engagement_lead"), info.get("first_monday") or info.get("first_week_with_entry"),
          int(info.get("duration_weeks") or 1), int(bool(info.get("c360_used"))), now, now))
     eid = int(cursor.lastrowid)
+    record_event(db, eid, "engagement_created", "Engagement created in Planning status")
     member_ids = []
     for member in payload.get("team", []):
         member_ids.append(insert_team_member(db, eid, member))
@@ -826,6 +929,7 @@ def full_engagement(db, eid):
         "expenses": list_expenses(db, eid),
         "recent_imports": snapshot_history(db, eid)[:3],
         "weekly_summary": weekly_summary(db, eid),
+        "events": list_events(db, eid),
     }
 
 
@@ -846,6 +950,11 @@ def list_expenses(db, eid):
     return rows_to_dicts(db.execute("""SELECT x.*,p.phase_name FROM expenses x
         LEFT JOIN phases p ON p.id=x.phase_id WHERE x.engagement_id=?
         ORDER BY x.incurred_date DESC,x.id DESC""", (eid,)).fetchall())
+
+
+def list_events(db, eid):
+    return rows_to_dicts(db.execute("""SELECT * FROM engagement_events
+        WHERE engagement_id=? ORDER BY created_at DESC,id DESC""", (eid,)).fetchall())
 
 
 def weekly_summary(db, eid):
@@ -925,10 +1034,19 @@ def revision_target(db, eid, target_type, target_id):
         JOIN phases p ON p.id=ppw.phase_id WHERE ppw.id=? AND p.engagement_id=?""", (target_id, eid)).fetchone()
 
 
-def budget_locked(eid, target_type, target_id):
+def budget_locked(eid, target_type, target_id, field_name=None):
     endpoint = f"/api/engagements/{eid}/revisions"
+    extra = {"revision_endpoint": endpoint, "target_type": target_type, "target_id": target_id}
+    if field_name:
+        extra["field_name"] = field_name
     return fail("Budget is locked. Record a reasoned revision.", 409, "budget_locked",
-                extra={"revision_endpoint": endpoint, "target_type": target_type, "target_id": target_id})
+                extra=extra)
+
+
+def record_event(db, eid, event_type, description):
+    db.execute("""INSERT INTO engagement_events
+        (engagement_id,event_type,description,created_at) VALUES (?,?,?,?)""",
+        (eid, event_type, str(description).strip(), now_iso()))
 
 
 def validate_adjustment(payload):
