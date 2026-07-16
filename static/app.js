@@ -1,1318 +1,295 @@
+/* Aesthetic direction: Swiss / typographic. Crowe indigo anchors a dense operational workspace. */
+const state = { theme: localStorage.getItem('budget-theme') || 'light' };
+document.documentElement.dataset.theme = state.theme;
+
+const esc = (value) => String(value ?? '').replace(/[&<>'"]/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+const money = (value) => new Intl.NumberFormat('en-US', {style:'currency', currency:'USD'}).format(Number(value || 0));
+const num = (value, digits=1) => Number(value || 0).toLocaleString('en-US', {minimumFractionDigits:digits, maximumFractionDigits:digits});
+const pct = (value) => value == null ? '—' : `${num(Number(value)*100, 1)}%`;
 const app = document.getElementById('app');
-const CROWE_LOGO_WHITE = '/static/assets/crowe-logo-white.svg';
-const CROWE_LOGO_COLOR = '/static/assets/crowe-logo.svg';
-const COGNOS_REPORT_URL = 'https://example.com/demo-cognos-report';
 
-const ROLES = [
-  'Partner',
-  'Managing Director',
-  'Senior Manager',
-  'Manager',
-  'Senior Staff',
-  'Staff',
-  'Intern',
-  'Project Services',
-  'Other',
-];
-const MODEL_TYPES = ['ALM', 'CECL', 'Stress Testing', 'AML/BSA', 'Other'];
-const ADJUSTMENT_TYPES = ['markdown', 'c360', 'bima', 'change_order'];
-const state = { expandedSnapshots: new Set() };
-
-function svgIcon(name) {
-  const paths = {
-    home: '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M9 21v-7h6v7"/>',
-    plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
-    settings: '<path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 0 1-4 0v-.09A1.7 1.7 0 0 0 9 19.35a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.07 14H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.65 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.63 1.7 1.7 0 0 0 10 3.07V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15 4.65a1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.37 9c.22.6.8 1 1.44 1H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15Z"/>',
-    users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
-    upload: '<path d="M12 3v12"/><path d="m7 8 5-5 5 5"/><path d="M5 21h14"/>',
-    history: '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v6h6"/><path d="M12 7v5l3 2"/>',
-    file: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/>',
-    trash: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 15H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
-    edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
-    save: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/>',
-    chevron: '<path d="m9 18 6-6-6-6"/>',
-  };
-  return `<svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.file}</svg>`;
-}
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
-}
-
-function money(value) {
-  return Number(value || 0).toLocaleString(undefined, {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 0,
-  });
-}
-
-function num(value, digits = 1) {
-  return Number(value || 0).toLocaleString(undefined, {
-    maximumFractionDigits: digits,
-    minimumFractionDigits: digits,
-  });
-}
-
-function pct(value) {
-  return `${Math.round(Number(value || 0) * 100)}%`;
-}
-
-function statusClass(status) {
-  return String(status || 'On Track').replace(/\s+/g, '');
-}
-
-function progressClass(value, status) {
-  if (status === 'Over Budget' || value >= 0.95) return 'over-budget';
-  if (status === 'Watch' || value >= 0.8) return 'watch';
-  return '';
-}
-
-async function api(path, options = {}) {
-  const init = { ...options };
-  if (init.body && !(init.body instanceof FormData)) {
-    init.headers = { 'Content-Type': 'application/json', ...(init.headers || {}) };
-    init.body = JSON.stringify(init.body);
+async function api(path, options={}) {
+  const init = {method: options.method || 'GET', headers: {...(options.headers || {})}};
+  if (options.body !== undefined) {
+    init.headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(options.body);
   }
   const response = await fetch(path, init);
-  const payload = await response.json().catch(() => null);
-  if (!response.ok || (payload && payload.error)) {
-    const message = payload?.error?.message || `Request failed: ${response.status}`;
-    const error = new Error(message);
-    error.payload = payload;
+  const payload = await response.json().catch(() => ({data:null,error:{message:'Invalid server response'}}));
+  if (!response.ok) {
+    const error = new Error(payload.error?.message || 'Request failed');
+    error.details = payload.error || {};
     throw error;
   }
   return payload.data;
 }
 
-function navLink(path, label, iconName) {
-  const current = window.location.pathname;
-  const active = current === path ? 'active' : '';
-  return `<a class="nav-link ${active}" href="${path}" data-link>${svgIcon(iconName)}<span>${label}</span></a>`;
+function statusBadge(status) {
+  return `<span class="status ${String(status || '').toLowerCase().replaceAll(' ','-')}">${esc(status || 'Planning')}</span>`;
 }
 
-function shell(title, body, actions = '') {
-  return `
-    <div class="layout">
-      <aside class="sidebar">
-        <div class="brand">
-          <a class="brand-mark" href="/" data-link>
-            <img class="brand-logo" src="${CROWE_LOGO_WHITE}" alt="Crowe">
-            <span class="brand-product">Budget Tracker</span>
-          </a>
-          <div class="brand-subtitle">Engagement controls</div>
-        </div>
-        <nav class="nav">
-          ${navLink('/', 'Home', 'home')}
-          ${navLink('/dashboard', 'Dashboard', 'file')}
-          ${navLink('/engagements/new', 'New Engagement', 'plus')}
-          ${navLink('/settings', 'Settings', 'settings')}
-        </nav>
-      </aside>
-      <main class="main">
-        <header class="topbar">
-          <h1>${escapeHtml(title)}</h1>
-          <div class="topbar-actions">${actions}</div>
-        </header>
-        <section class="content">${body}</section>
-      </main>
-    </div>
-  `;
+function metric(label, value, note='') {
+  return `<article class="metric"><span>${esc(label)}</span><strong>${value}</strong>${note ? `<small>${esc(note)}</small>` : ''}</article>`;
 }
 
-function setPage(title, body, actions = '') {
-  app.innerHTML = shell(title, body, actions);
+function navLink(path, label) {
+  const active = location.pathname === path || (path !== '/dashboard' && location.pathname.startsWith(path));
+  return `<a class="nav-link ${active ? 'active' : ''}" href="${path}" data-link>${label}</a>`;
 }
 
-function loadingCard() {
-  return '<div class="card"><div class="muted">Loading...</div></div>';
-}
-
-function showToast(message) {
-  const old = document.querySelector('.toast');
-  if (old) old.remove();
-  const toast = document.createElement('div');
-  toast.className = 'toast';
-  toast.textContent = message;
-  document.body.appendChild(toast);
-  setTimeout(() => toast.remove(), 2800);
-}
-
-
-function demoDataButton(hasData = false) {
-  const label = hasData ? 'Reset Demo Data' : 'Load Demo Data';
-  return `<button class="btn secondary" data-load-demo data-replace-existing="${hasData ? 'true' : 'false'}">${svgIcon('upload')}${label}</button>`;
-}
-
-function bindDemoSeedButtons(root = document) {
-  root.querySelectorAll('[data-load-demo]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const replacesData = button.dataset.replaceExisting === 'true';
-      if (replacesData && !window.confirm('Replace the current data with the synthetic demo set?')) return;
-      const original = button.innerHTML;
-      button.disabled = true;
-      button.innerHTML = `${svgIcon('upload')}Loading...`;
-      try {
-        await api('/api/demo/load-seed', { method: 'POST' });
-        showToast('Synthetic demo data loaded');
-        if (window.location.pathname === '/') {
-          navigate('/dashboard');
-        } else {
-          render();
-        }
-      } catch (error) {
-        showToast(error.message || 'Unable to load demo data');
-        button.disabled = false;
-        button.innerHTML = original;
-      }
-    });
-  });
-}
-function bindLinks(root = document) {
-  root.querySelectorAll('[data-link]').forEach((link) => {
-    link.addEventListener('click', (event) => {
-      event.preventDefault();
-      navigate(link.getAttribute('href'));
-    });
+function shell(title, body, actions='') {
+  app.innerHTML = `<div class="layout"><aside class="sidebar">
+    <a class="brand" href="/dashboard" data-link><img src="/static/assets/crowe-logo-white.svg" alt="Crowe"><span>Engagement<br>Budget Tracker</span></a>
+    <nav>${navLink('/dashboard','Dashboard')}${navLink('/engagements/new','New engagement')}${navLink('/settings','Settings')}</nav>
+    <div class="sidebar-foot"><span>Local-first · Schema v2</span><button id="theme-toggle" class="theme-toggle" aria-label="Toggle color theme">${state.theme === 'light' ? 'Dark' : 'Light'} mode</button></div>
+  </aside><main class="main"><header class="topbar"><div><span class="eyebrow">Budget governance</span><h1>${esc(title)}</h1></div><div class="top-actions">${actions}</div></header><div class="content">${body}</div></main></div>`;
+  bindNavigation();
+  document.getElementById('theme-toggle')?.addEventListener('click', () => {
+    state.theme = state.theme === 'light' ? 'dark' : 'light';
+    localStorage.setItem('budget-theme', state.theme);
+    document.documentElement.dataset.theme = state.theme;
+    render();
   });
 }
 
-function navigate(path) {
-  window.history.pushState({}, '', path);
-  render();
+function bindNavigation(root=document) {
+  root.querySelectorAll('[data-link]').forEach((link) => link.addEventListener('click', (event) => {
+    if (event.ctrlKey || event.metaKey) return;
+    event.preventDefault();
+    history.pushState({}, '', link.href);
+    render();
+  }));
 }
 
-function renderLanding() {
-  app.innerHTML = `
-    <div class="landing-page">
-      <header class="landing-topbar">
-        <a class="landing-logo" href="/" data-link>
-          <img src="${CROWE_LOGO_WHITE}" alt="Crowe">
-          <span>Engagement Budget Tracker</span>
-        </a>
-        <nav class="landing-nav" aria-label="Primary">
-          <a href="/dashboard" data-link>Dashboard</a>
-          <a href="/engagements/new" data-link>New Engagement</a>
-          <a href="/settings" data-link>Settings</a>
-        </nav>
-      </header>
-      <main>
-        <section class="landing-hero">
-          <div class="landing-angle one"></div>
-          <div class="landing-angle two"></div>
-          <div class="landing-hero-copy">
-            <div class="landing-kicker">Crowe engagement finance</div>
-            <h1>Engagement Budget Tracker</h1>
-            <p>Track budgets, Cognos imports, weekly snapshots, projected fees, and export-ready budget reporting from one focused control center.</p>
-            <div class="landing-actions">
-              <button class="btn primary landing-cta" data-load-demo>${svgIcon('upload')}Load Demo Data</button>
-              <a class="btn ghost landing-cta" href="/dashboard" data-link>${svgIcon('file')}Open Dashboard</a>
-            </div>
-          </div>
-          <div class="landing-visual" aria-label="Engagement budget dashboard preview">
-            <div class="landing-panel">
-              <div class="preview-toolbar">
-                <span></span><span></span><span></span>
-                <strong>Weekly Budget Run</strong>
-              </div>
-              <div class="preview-grid">
-                <div class="preview-stat amber"><span>Projected Final</span><strong>$25,950</strong></div>
-                <div class="preview-stat teal"><span>Fees To Date</span><strong>$18,640</strong></div>
-                <div class="preview-stat blue"><span>Hours Used</span><strong>64%</strong></div>
-              </div>
-              <div class="preview-chart">
-                <div class="chart-row"><span>Budget</span><i style="width: 88%"></i></div>
-                <div class="chart-row"><span>Actuals</span><i style="width: 62%"></i></div>
-                <div class="chart-row"><span>Forecast</span><i style="width: 74%"></i></div>
-              </div>
-              <div class="preview-table">
-                <div><span>Sample engagement</span><strong>On Track</strong></div>
-                <div><span>Duplicate entries</span><strong>Skipped</strong></div>
-                <div><span>Excel / PDF report</span><strong>Ready</strong></div>
-              </div>
-            </div>
-          </div>
-        </section>
-        <section class="landing-workflow" aria-label="Workflow">
-          <div class="workflow-heading">
-            <div class="landing-kicker dark">Weekly operating rhythm</div>
-            <h2>Import, review, report.</h2>
-          </div>
-          <div class="landing-feature-grid">
-            <article class="landing-feature"><span>01</span><h3>Model the budget</h3><p>Set SOW fees, phase budgets, team rates, and expected hours before the work starts.</p></article>
-            <article class="landing-feature"><span>02</span><h3>Load Cognos actuals</h3><p>Import weekly time and expense files with duplicate detection and validation flags.</p></article>
-            <article class="landing-feature"><span>03</span><h3>Send the report</h3><p>Export formatted Excel, HTML, and PDF-ready views with run dates, charts, and clean totals.</p></article>
-          </div>
-        </section>
-      </main>
-    </div>
-  `;
-  bindLinks();
-  bindDemoSeedButtons();
+function toast(message, kind='success') {
+  document.querySelector('.toast')?.remove();
+  const node = document.createElement('div');
+  node.className = `toast ${kind}`;
+  node.textContent = message;
+  document.body.append(node);
+  setTimeout(() => node.remove(), 3200);
+}
+
+function errorPanel(error) {
+  return `<div class="alert danger"><strong>Unable to continue</strong><span>${esc(error.message || error)}</span></div>`;
+}
+
+function field(label, name, value='', type='text', attrs='') {
+  return `<label class="field"><span>${esc(label)}</span><input name="${name}" type="${type}" value="${esc(value)}" ${attrs}></label>`;
+}
+
+function select(label, name, value, options, attrs='') {
+  return `<label class="field"><span>${esc(label)}</span><select name="${name}" ${attrs}>${options.map((item) => {
+    const pair = Array.isArray(item) ? item : [item,item];
+    return `<option value="${esc(pair[0])}" ${String(pair[0]) === String(value) ? 'selected' : ''}>${esc(pair[1])}</option>`;
+  }).join('')}</select></label>`;
+}
+
+function formObject(form) {
+  return Object.fromEntries(new FormData(form).entries());
 }
 
 async function renderDashboard() {
-  setPage('Dashboard', loadingCard(), `${demoDataButton()}<a class="btn primary" href="/engagements/new" data-link>${svgIcon('plus')}New Engagement</a>`);
-  bindLinks();
-  bindDemoSeedButtons();
+  shell('Engagement portfolio', '<div class="loading">Loading engagements…</div>', '<a class="btn primary" href="/engagements/new" data-link>New engagement</a>');
   try {
     const data = await api('/api/engagements');
-    const metrics = data.metrics;
-    const hasEngagements = data.engagements.length > 0;
-    const cards = data.engagements
-      .map((engagement) => engagementCard(engagement))
-      .join('') || `<div class="empty stack"><strong>No engagements yet.</strong><span>Load the synthetic demo set or start a blank engagement.</span>${demoDataButton(false)}</div>`;
-    setPage(
-      'Dashboard',
-      `
-      <div class="grid metric-grid">
-        ${metricCard('Active Engagements', metrics.total_active_engagements)}
-        ${metricCard('Hours MTD', num(metrics.total_hours_mtd))}
-        ${metricCard('Fees MTD', money(metrics.total_fees_mtd))}
-        ${metricCard('Watch / Over Budget', metrics.watch_or_over_budget)}
-      </div>
-      <div class="grid card-grid" style="margin-top:16px">${cards}</div>
-      `,
-      `${demoDataButton(hasEngagements)}<a class="btn primary" href="/engagements/new" data-link>${svgIcon('plus')}New Engagement</a>`
-    );
-    bindLinks();
-    bindDemoSeedButtons();
-  } catch (error) {
-    setPage('Dashboard', `<div class="card">${escapeHtml(error.message)}</div>`);
-  }
+    const m = data.metrics;
+    const cards = data.engagements.map((item) => {
+      const x = item.metrics;
+      return `<a class="engagement-card" href="/engagements/${item.id}" data-link>
+        <div class="card-kicker"><span>${esc(item.engagement_code)}</span>${statusBadge(x.status)}</div>
+        <h2>${esc(item.client_name)}</h2><p>${esc(item.engagement_lead || 'Lead not assigned')}</p>
+        <div class="progress"><i style="width:${Math.min(100, Math.max(0, x.utilization_pct*100))}%"></i></div>
+        <div class="card-stats"><span><b>${num(x.hours_to_date)}</b> hours</span><span><b>${money(x.fees_to_date_contract)}</b> used</span></div>
+        <small>${esc(item.complexity_mode)} mode · Last import ${esc(item.last_import_date || 'none')}</small></a>`;
+    }).join('');
+    shell('Engagement portfolio', `<section class="metrics four">${metric('Active engagements', m.total_active_engagements)}${metric('Hours this month', num(m.total_hours_mtd))}${metric('Fees this month', money(m.total_fees_mtd))}${metric('Needs attention', m.watch_or_over_budget)}</section>
+      <div class="section-heading"><div><span class="eyebrow">Portfolio</span><h2>Current engagements</h2></div></div>
+      <section class="engagement-grid">${cards || '<div class="empty">No engagements yet. Create the first budget to begin.</div>'}</section>`,
+      '<a class="btn primary" href="/engagements/new" data-link>New engagement</a>');
+  } catch (error) { shell('Engagement portfolio', errorPanel(error)); }
 }
 
-function metricCard(label, value) {
-  return `<div class="card"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`;
+function engagementTabs(id, mode='simple') {
+  const tabs = [['Overview',''],['Team and budget','team'],['Weekly import','import'],['Adjustments','adjustments'],
+                ['Expenses','expenses'],['History','history'],['Export','export']];
+  if (mode === 'complex') tabs.splice(5,0,['Revisions','revisions']);
+  return `<nav class="tabs">${tabs.map(([label,route]) => `<a href="/engagements/${id}${route ? `/${route}` : ''}" data-link>${label}</a>`).join('')}</nav>`;
 }
 
-function miniMetric(label, value) {
-  return `<div class="row between"><span class="muted small">${label}</span><strong>${value}</strong></div>`;
-}
-
-function engagementCard(engagement) {
-  const m = engagement.metrics || {};
-  const hoursPct = m.total_budgeted_hours ? m.hours_to_date / m.total_budgeted_hours : 0;
-  const feesPct = m.utilization_pct || 0;
-  return `
-    <a class="card stack" href="/engagements/${engagement.id}" data-link style="color:inherit;text-decoration:none">
-      <div class="row between">
-        <div>
-          <div class="section-title">${escapeHtml(engagement.client_name)}</div>
-          <div class="muted small">${escapeHtml(engagement.engagement_code)} - ${escapeHtml(engagement.engagement_lead || 'No lead')}</div>
-        </div>
-        ${statusBadge(m.status)}
-      </div>
-      <div class="stack tight">
-        <div class="row between small"><span>Hours</span><span>${num(m.hours_to_date)} / ${num(m.total_budgeted_hours)}</span></div>
-        <div class="progress ${progressClass(hoursPct, m.status)}"><span style="width:${Math.min(hoursPct * 100, 100)}%"></span></div>
-      </div>
-      <div class="stack tight">
-        <div class="row between small"><span>Fees</span><span>${money(m.fees_to_date_contract)} / ${money(m.net_budget)}</span></div>
-        <div class="progress ${progressClass(feesPct, m.status)}"><span style="width:${Math.min(feesPct * 100, 100)}%"></span></div>
-      </div>
-      <div class="muted small">Last import: ${escapeHtml(engagement.last_import_date || 'None')}</div>
-    </a>
-  `;
-}
-
-function statusBadge(status) {
-  return `<span class="badge ${statusClass(status)}">${escapeHtml(status || 'On Track')}</span>`;
+async function renderEngagement(id) {
+  shell('Engagement overview', '<div class="loading">Loading budget…</div>');
+  try {
+    const data = await api(`/api/engagements/${id}`);
+    const e = data.engagement, m = data.metrics;
+    const banner = m.unmatched_phase_rows ? `<a class="alert warning" href="/engagements/${id}/import" data-link><strong>Unmatched phase time</strong><span>${num(m.unmatched_phase_hours)} hours from ${m.unmatched_phase_workers} workers need assignment</span></a>` : '';
+    const phaseRows = data.phases.map((p) => `<tr data-phase="${p.id}"><td><a href="/engagements/${id}/phases/${p.id}" data-link>${esc(p.phase_name)}</a></td><td>${num(p.budgeted_hours)}</td><td>${num(p.current_plan_hours)}</td><td>${num(p.current_plan_hours-p.budgeted_hours)}</td><td>${money(p.effective_sow)}</td><td>${money(p.current_plan_eng_fees)}</td><td>${money(p.current_plan_eng_fees-p.effective_sow)}</td></tr>`).join('');
+    const teamRows = data.team.map((x) => `<tr><td>${esc(x.name)} ${x.is_offshore ? '<span class="os-badge">OS</span>' : ''}</td><td>${esc(x.role || '')}</td><td>${num(x.budgeted_hours)}</td><td>${num(x.hours_to_date)}</td><td>${num(x.hours_remaining)}</td><td>${money(x.actual_eng_fees)}</td></tr>`).join('');
+    shell(e.client_name, `${engagementTabs(id,e.complexity_mode)}${banner}
+      <section class="engagement-hero"><div><span class="eyebrow">${esc(e.engagement_code)} · ${esc(e.complexity_mode)} mode</span><h2>${esc(e.engagement_lead || 'Lead not assigned')}</h2></div>${statusBadge(m.status)}</section>
+      <section class="metrics five">${metric('Budgeted hours',num(m.total_budgeted_hours))}${metric('Hours to date',num(m.hours_to_date))}${metric('Hours remaining',num(m.hours_remaining),pct(m.hours_remaining_pct))}${metric('Contract fees',money(m.fees_to_date_contract))}${metric('Effective budget',money(m.effective_sow))}</section>
+      <section class="card budget-position"><div><div class="section-heading"><h2>Budget position</h2><strong>${pct(m.utilization_pct)} used</strong></div><div class="progress large"><i style="width:${Math.min(100,m.utilization_pct*100)}%"></i></div><div class="inline-stats"><span>Projected final <b>${money(m.projected_final)}</b></span><span>Remaining <b>${money(m.budget_remaining)}</b></span><span>Markdown needed <b>${money(m.markdown_needed)}</b></span></div></div><aside><span>Realization</span><strong>${pct(m.realization)}</strong><small>SOW and change orders minus Crowe-paid expenses, divided by actual standard fees</small></aside></section>
+      ${e.complexity_mode === 'complex' ? `<section class="card"><h2>Phase breakdown</h2><div class="table-wrap"><table><thead><tr><th>Phase</th><th>Budget hours</th><th>Current plan</th><th>Variance</th><th>Budget</th><th>Fees planned</th><th>Over/under</th></tr></thead><tbody>${phaseRows}</tbody></table></div></section>` : ''}
+      <section class="card"><h2>Engagement team</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Budget</th><th>Actual</th><th>Remaining</th><th>Engagement fees</th></tr></thead><tbody>${teamRows}</tbody></table></div></section>`);
+  } catch (error) { shell('Engagement overview', errorPanel(error)); }
 }
 
 async function renderNewEngagement() {
-  const settings = await api('/api/settings/rates').catch(() => ({ rates: {} }));
-  const wizard = {
-    step: 1,
-    engagement: {
-      engagement_code: '',
-      client_name: '',
-      model_type: '',
-      model_vendor: '',
-      engagement_lead: '',
-      first_week_with_entry: '',
-      max_sow_fees: 0,
-      change_order_amt: 0,
-    },
-    team: [blankMember(settings.rates)],
-    phases: [],
-    rates: settings.rates || {},
-  };
-
+  const settings = await api('/api/settings/rates').catch(() => ({rates:{}}));
+  const wizard = {step:1, info:{complexity_mode:'simple',duration_weeks:8},
+    team:[{name:'',role:'Manager FY26',internal_rate:settings.rates['Manager FY26'] || 350,budgeted_hours:0}],
+    phases:[{phase_name:'',phase_code:'',sow_fees:0}], weekly:{}, settings};
+  const titles = ['Engagement','Team','Phases','Weekly budget'];
   function draw() {
-    const titles = ['Engagement Info', 'Team', 'Phases'];
-    setPage(
-      'New Engagement',
-      `
-      <div class="wizard-steps">
-        ${titles.map((title, idx) => `<div class="wizard-step ${wizard.step === idx + 1 ? 'active' : ''}"><div class="small muted">Step ${idx + 1}</div><strong>${title}</strong></div>`).join('')}
-      </div>
-      <div class="card stack">
-        ${wizard.step === 1 ? engagementFields(wizard.engagement) : ''}
-        ${wizard.step === 2 ? teamEditor(wizard.team, wizard.rates) : ''}
-        ${wizard.step === 3 ? phaseEditor(wizard.phases) : ''}
-        <div class="row between">
-          <button class="btn secondary" id="wizard-back" ${wizard.step === 1 ? 'disabled' : ''}>Back</button>
-          <div class="row">
-            ${wizard.step < 3 ? '<button class="btn primary" id="wizard-next">Next</button>' : '<button class="btn primary" id="wizard-save">Save Engagement</button>'}
-          </div>
-        </div>
-      </div>
-      `
-    );
-    bindWizard();
+    const actions = `<button class="btn secondary" id="back" ${wizard.step===1?'disabled':''}>Back</button><button class="btn primary" id="next">${wizard.step===4?'Create engagement':'Continue'}</button>`;
+    const progress = `<div class="wizard-progress">${titles.map((title,index)=>`<div class="${wizard.step===index+1?'active':''} ${wizard.step>index+1?'done':''}"><span>0${index+1}</span>${title}</div>`).join('')}</div>`;
+    let body = wizard.step===1 ? wizardInfo(wizard) : wizard.step===2 ? wizardTeam(wizard) : wizard.step===3 ? wizardPhases(wizard) : wizardWeeks(wizard);
+    shell('New engagement', `${progress}<section class="card wizard">${body}<div class="wizard-actions">${actions}</div></section>`);
+    bind();
   }
-
-  function bindWizard() {
-    bindLinks();
-    document.querySelectorAll('[data-engagement-field]').forEach((field) => {
-      field.addEventListener('input', () => {
-        wizard.engagement[field.dataset.engagementField] = coerceField(field);
-      });
-    });
-    const code = document.querySelector('[data-engagement-field="engagement_code"]');
-    if (code) {
-      code.addEventListener('blur', async () => {
-        if (!code.value.trim()) return;
-        const result = await api(`/api/engagements/check-code?code=${encodeURIComponent(code.value.trim())}`);
-        if (!result.available) showToast('Engagement code already exists');
-      });
-    }
-    document.querySelectorAll('[data-team-field]').forEach((field) => {
-      field.addEventListener('input', () => {
-        const member = wizard.team[Number(field.dataset.index)];
-        member[field.dataset.teamField] = coerceField(field);
-        if (field.dataset.teamField === 'role') {
-          const rate = wizard.rates[field.value] || 0;
-          member.internal_rate = rate;
-          member.engagement_rate = rate;
-          draw();
-        } else if (['internal_rate', 'engagement_rate', 'budgeted_hours'].includes(field.dataset.teamField)) {
-          updateTeamTotals(wizard.team);
-        }
-      });
-    });
-    document.querySelectorAll('[data-phase-field]').forEach((field) => {
-      field.addEventListener('input', () => {
-        wizard.phases[Number(field.dataset.index)][field.dataset.phaseField] = coerceField(field);
-      });
-    });
-    document.querySelectorAll('[data-remove-team]').forEach((button) => {
-      button.addEventListener('click', () => {
-        wizard.team.splice(Number(button.dataset.removeTeam), 1);
-        draw();
-      });
-    });
-    document.querySelectorAll('[data-remove-phase]').forEach((button) => {
-      button.addEventListener('click', () => {
-        wizard.phases.splice(Number(button.dataset.removePhase), 1);
-        draw();
-      });
-    });
-    document.getElementById('add-team')?.addEventListener('click', () => {
-      wizard.team.push(blankMember(wizard.rates));
-      draw();
-    });
-    document.getElementById('add-phase')?.addEventListener('click', () => {
-      wizard.phases.push({ phase_name: '', budgeted_hours: 0, budgeted_eng_fees: 0 });
-      draw();
-    });
-    document.getElementById('wizard-back')?.addEventListener('click', () => {
-      wizard.step = Math.max(1, wizard.step - 1);
-      draw();
-    });
-    document.getElementById('wizard-next')?.addEventListener('click', () => {
-      if (wizard.step === 1 && !validEngagementBasics(wizard.engagement)) return;
-      wizard.step += 1;
-      draw();
-    });
-    document.getElementById('wizard-save')?.addEventListener('click', async () => {
-      if (!validEngagementBasics(wizard.engagement)) return;
-      const team = wizard.team.filter((member) => member.name.trim());
-      const phases = wizard.phases.filter((phase) => phase.phase_name.trim());
-      try {
-        const data = await api('/api/engagements', {
-          method: 'POST',
-          body: { engagement: wizard.engagement, team, phases },
-        });
-        showToast('Engagement saved');
-        navigate(`/engagements/${data.engagement.id}`);
-      } catch (error) {
-        showToast(error.message);
-      }
+  function bind() {
+    document.querySelectorAll('[data-info]').forEach((node)=>node.addEventListener('input',()=>{wizard.info[node.dataset.info]=node.type==='number'?Number(node.value):node.value;if(node.dataset.info==='complexity_mode')draw();}));
+    document.querySelectorAll('[data-team]').forEach((node)=>node.addEventListener('input',()=>{const [i,key]=node.dataset.team.split(':');wizard.team[i][key]=node.type==='number'?Number(node.value):node.type==='checkbox'?node.checked:node.value;if(key==='role'&&!wizard.team[i].internal_rate)wizard.team[i].internal_rate=settings.rates[node.value]||0;}));
+    document.querySelectorAll('[data-phase]').forEach((node)=>node.addEventListener('input',()=>{const [i,key]=node.dataset.phase.split(':');wizard.phases[i][key]=node.type==='number'?Number(node.value):node.value;}));
+    document.querySelectorAll('[data-week]').forEach((node)=>node.addEventListener('input',()=>wizard.weekly[node.dataset.week]=Number(node.value||0)));
+    document.getElementById('add-team')?.addEventListener('click',()=>{wizard.team.push({name:'',role:'Manager FY26',internal_rate:settings.rates['Manager FY26']||350,budgeted_hours:0});draw();});
+    document.getElementById('add-phase')?.addEventListener('click',()=>{wizard.phases.push({phase_name:'',phase_code:'',sow_fees:0});draw();});
+    document.querySelectorAll('[data-remove-team]').forEach((b)=>b.addEventListener('click',()=>{wizard.team.splice(Number(b.dataset.removeTeam),1);draw();}));
+    document.querySelectorAll('[data-remove-phase]').forEach((b)=>b.addEventListener('click',()=>{wizard.phases.splice(Number(b.dataset.removePhase),1);draw();}));
+    document.querySelectorAll('[data-distribute]').forEach((b)=>b.addEventListener('click',()=>{const [pi,ti]=b.dataset.distribute.split(':').map(Number);const weeks=weekDates(wizard.info.first_monday,wizard.info.duration_weeks);const per=Number(wizard.team[ti].budgeted_hours||0)/Math.max(1,weeks.length);weeks.forEach((week)=>wizard.weekly[`${pi}:${ti}:${week}`]=per);draw();}));
+    document.getElementById('back')?.addEventListener('click',()=>{wizard.step=Math.max(1,wizard.step-1);draw();});
+    document.getElementById('next')?.addEventListener('click',async()=>{
+      if(wizard.step===1&&(!wizard.info.engagement_code||!wizard.info.client_name)){toast('Engagement code and client name are required','error');return;}
+      if(wizard.step===2&&wizard.team.some((x)=>x.name&&!x.name.includes(','))){toast('Use Last, First for every team member','error');return;}
+      if(wizard.step===3&&wizard.info.complexity_mode==='complex'&&wizard.phases.every((x)=>!x.phase_name)){toast('Add at least one phase','error');return;}
+      if(wizard.step<4){wizard.step++;draw();return;}
+      const team=wizard.team.filter((x)=>x.name);const phases=wizard.phases.filter((x)=>x.phase_name);
+      const weekly_budgets=Object.entries(wizard.weekly).map(([key,budgeted_hours])=>{const [phase_index,team_index,week_start_date]=key.split(':');return {phase_index:Number(phase_index),team_index:Number(team_index),week_start_date,budgeted_hours};});
+      try{const data=await api('/api/engagements',{method:'POST',body:{engagement:wizard.info,team,phases,weekly_budgets}});history.pushState({},'',`/engagements/${data.engagement.id}`);render();}catch(error){toast(error.message,'error');}
     });
   }
-
   draw();
 }
 
-function validEngagementBasics(engagement) {
-  if (!engagement.engagement_code.trim() || !engagement.client_name.trim()) {
-    showToast('Engagement code and client name are required');
-    return false;
-  }
-  return true;
+function wizardInfo(w) {
+  const e=w.info;return `<div class="form-grid">${field('Engagement code','engagement_code',e.engagement_code,'text','required data-info="engagement_code"')}${field('Client name','client_name',e.client_name,'text','required data-info="client_name"')}${select('Complexity mode','complexity_mode',e.complexity_mode,[['simple','Simple'],['complex','Complex']],'data-info="complexity_mode"')}${select('Engagement type','engagement_type',e.engagement_type||'Advisory',['Audit','Validation','Tuning','Implementation','Advisory','Other'],'data-info="engagement_type"')}${field('Engagement lead','engagement_lead',e.engagement_lead,'text','data-info="engagement_lead"')}${field('Model type','model_type',e.model_type,'text','data-info="model_type"')}${e.complexity_mode==='complex'?field('First Monday','first_monday',e.first_monday,'date','required data-info="first_monday"')+field('Duration in weeks','duration_weeks',e.duration_weeks,'number','min="1" data-info="duration_weeks"'):field('Signed SOW fees','max_sow_fees',e.max_sow_fees,'number','min="0" step="0.01" data-info="max_sow_fees"')}</div>`;
 }
 
-function blankMember(rates) {
-  const rate = Number(rates?.Staff || 225);
-  return { name: '', role: 'Staff', internal_rate: rate, engagement_rate: rate, budgeted_hours: 0 };
+function wizardTeam(w) {
+  const roles=Object.keys(w.settings.rates);return `<div class="section-heading"><div><span class="eyebrow">Step two</span><h2>Engagement team</h2></div><button class="btn secondary" id="add-team">Add person</button></div><div class="table-wrap"><table><thead><tr><th>Name (Last, First)</th><th>Role</th><th>Std rate</th><th>Engagement rate</th><th>Contract rate</th><th>DTE</th><th>Budget hours</th><th>Offshore</th><th></th></tr></thead><tbody>${w.team.map((x,i)=>`<tr><td><input data-team="${i}:name" value="${esc(x.name)}"></td><td><select data-team="${i}:role">${roles.map(r=>`<option ${r===x.role?'selected':''}>${esc(r)}</option>`).join('')}</select></td><td><input type="number" data-team="${i}:internal_rate" value="${x.internal_rate||0}"></td><td><input type="number" data-team="${i}:engagement_rate" value="${x.engagement_rate||''}" placeholder="Default"></td><td><input type="number" data-team="${i}:contract_rate" value="${x.contract_rate||''}" placeholder="Default"></td><td><input type="number" data-team="${i}:dte_rate" value="${x.dte_rate||0}"></td><td><input type="number" data-team="${i}:budgeted_hours" value="${x.budgeted_hours||0}"></td><td><input type="checkbox" data-team="${i}:is_offshore" ${x.is_offshore?'checked':''}></td><td><button class="icon-btn" data-remove-team="${i}" aria-label="Remove person">×</button></td></tr>`).join('')}</tbody></table></div>`;
 }
 
-function coerceField(field) {
-  if (field.type === 'checkbox') return field.checked;
-  if (field.type === 'number') return Number(field.value || 0);
-  return field.value;
+function wizardPhases(w) {
+  if(w.info.complexity_mode==='simple')return `<div class="empty"><strong>Simple mode uses one General phase</strong><p>The phase is created automatically and remains hidden during normal use.</p></div>`;
+  return `<div class="section-heading"><div><span class="eyebrow">Step three</span><h2>Phases and SOW</h2></div><button class="btn secondary" id="add-phase">Add phase</button></div><div class="table-wrap"><table><thead><tr><th>Phase name</th><th>Phase code</th><th>SOW fees</th><th></th></tr></thead><tbody>${w.phases.map((x,i)=>`<tr><td><input data-phase="${i}:phase_name" value="${esc(x.phase_name)}"></td><td><input data-phase="${i}:phase_code" value="${esc(x.phase_code)}" placeholder="Leave blank if unsure"></td><td><input type="number" data-phase="${i}:sow_fees" value="${x.sow_fees||0}"></td><td><button class="icon-btn" data-remove-phase="${i}" aria-label="Remove phase">×</button></td></tr>`).join('')}</tbody></table></div><p class="hint">Phase codes are optional and frequently inconsistent in Cognos exports. Unmatched rows can be assigned during import.</p>`;
 }
 
-function engagementFields(engagement) {
-  return `
-    <div class="form-grid">
-      ${inputField('Engagement Code', 'engagement_code', engagement.engagement_code, 'text', true)}
-      ${inputField('Client Name', 'client_name', engagement.client_name, 'text', true)}
-      ${selectField('Model Type', 'model_type', engagement.model_type, MODEL_TYPES, 'data-engagement-field')}
-      ${inputField('Model Vendor', 'model_vendor', engagement.model_vendor)}
-      ${inputField('Engagement Lead', 'engagement_lead', engagement.engagement_lead)}
-      ${inputField('First Week with Entry', 'first_week_with_entry', engagement.first_week_with_entry, 'date')}
-      ${inputField('Max SOW Fees', 'max_sow_fees', engagement.max_sow_fees, 'number', true)}
-      ${inputField('Change Order Amount', 'change_order_amt', engagement.change_order_amt, 'number')}
-    </div>
-  `;
+function weekDates(first, count) {
+  if(!first)return [];
+  const start=new Date(`${first}T12:00:00`);return Array.from({length:Number(count||1)},(_,i)=>{const day=new Date(start);day.setDate(day.getDate()+i*7);return day.toISOString().slice(0,10);});
 }
 
-function inputField(label, name, value, type = 'text', required = false, attr = 'data-engagement-field') {
-  return `
-    <div class="field">
-      <label>${label}${required ? ' *' : ''}</label>
-      <input type="${type}" ${attr}="${name}" value="${escapeHtml(value)}" ${required ? 'required' : ''} ${type === 'number' ? 'step="0.01"' : ''}>
-    </div>
-  `;
+function wizardWeeks(w) {
+  if(w.info.complexity_mode==='simple')return `<div class="review"><span class="eyebrow">Ready to create</span><h2>${esc(w.info.client_name||'New engagement')}</h2><p>${w.team.filter(x=>x.name).length} team members · ${money(w.info.max_sow_fees||0)} signed SOW</p></div>`;
+  const weeks=weekDates(w.info.first_monday,w.info.duration_weeks);const phases=w.phases.filter(x=>x.phase_name);const team=w.team.filter(x=>x.name);
+  return `<div class="section-heading"><div><span class="eyebrow">Step four</span><h2>Weekly budget grid</h2></div><span>${weeks.length} weeks</span></div>${phases.map((phase,pi)=>`<section class="phase-plan"><h3>${esc(phase.phase_name)}</h3><div class="weekly-grid-wrap"><table class="weekly-grid"><thead><tr><th>Team member</th>${weeks.map(x=>`<th>${new Date(`${x}T12:00:00`).toLocaleDateString('en-US',{month:'short',day:'numeric'})}</th>`).join('')}</tr></thead><tbody>${team.map((member,ti)=>`<tr><th><span>${esc(member.name)}</span><button type="button" data-distribute="${pi}:${ti}">Distribute</button></th>${weeks.map(week=>`<td><input type="number" min="0" step="0.25" data-week="${pi}:${ti}:${week}" value="${w.weekly[`${pi}:${ti}:${week}`]??0}"></td>`).join('')}</tr>`).join('')}</tbody></table></div></section>`).join('')}`;
 }
 
-function selectField(label, name, value, options, attr, index = '') {
-  return `
-    <div class="field">
-      <label>${label}</label>
-      <select ${attr}="${name}" ${index}>
-        <option value=""></option>
-        ${options.map((option) => `<option value="${escapeHtml(option)}" ${option === value ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}
-      </select>
-    </div>
-  `;
-}
-
-function teamEditor(team, rates) {
-  const rows = team
-    .map(
-      (member, index) => `
-      <tr>
-        <td><input data-team-field="name" data-index="${index}" value="${escapeHtml(member.name)}" placeholder="Last, First"></td>
-        <td>
-          <select data-team-field="role" data-index="${index}">
-            ${ROLES.map((role) => `<option value="${role}" ${role === member.role ? 'selected' : ''}>${role}</option>`).join('')}
-          </select>
-        </td>
-        <td><input type="number" step="0.01" data-team-field="internal_rate" data-index="${index}" value="${member.internal_rate || 0}"></td>
-        <td><input type="number" step="0.01" data-team-field="engagement_rate" data-index="${index}" value="${member.engagement_rate || 0}"></td>
-        <td><input type="number" step="0.1" data-team-field="budgeted_hours" data-index="${index}" value="${member.budgeted_hours || 0}"></td>
-        <td><button class="btn icon secondary" title="Remove" data-remove-team="${index}">${svgIcon('trash')}</button></td>
-      </tr>`
-    )
-    .join('');
-  return `
-    <div class="row between">
-      <h2 class="section-title">Team</h2>
-      <button class="btn secondary" id="add-team">${svgIcon('plus')}Add Row</button>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Name</th><th>Role</th><th>Crowe Bill Rate</th><th>Negotiated Rate</th><th>Budgeted Hours</th><th></th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>
-    <div class="row wrap muted small" id="team-totals">${teamTotals(team)}</div>
-  `;
-}
-
-function updateTeamTotals(team) {
-  const target = document.getElementById('team-totals');
-  if (target) target.innerHTML = teamTotals(team);
-}
-
-function teamTotals(team) {
-  const hours = team.reduce((sum, member) => sum + Number(member.budgeted_hours || 0), 0);
-  const fees = team.reduce(
-    (sum, member) => sum + Number(member.budgeted_hours || 0) * Number(member.engagement_rate || 0),
-    0
-  );
-  return `<span>Total budgeted hours: ${num(hours)}</span><span>Total budgeted fees: ${money(fees)}</span>`;
-}
-
-function phaseEditor(phases) {
-  const rows = phases
-    .map(
-      (phase, index) => `
-      <tr>
-        <td><input data-phase-field="phase_name" data-index="${index}" value="${escapeHtml(phase.phase_name)}"></td>
-        <td><input type="number" step="0.1" data-phase-field="budgeted_hours" data-index="${index}" value="${phase.budgeted_hours || 0}"></td>
-        <td><input type="number" step="0.01" data-phase-field="budgeted_eng_fees" data-index="${index}" value="${phase.budgeted_eng_fees || 0}"></td>
-        <td><button class="btn icon secondary" title="Remove" data-remove-phase="${index}">${svgIcon('trash')}</button></td>
-      </tr>`
-    )
-    .join('');
-  return `
-    <div class="row between">
-      <h2 class="section-title">Phases</h2>
-      <button class="btn secondary" id="add-phase">${svgIcon('plus')}Add Phase</button>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Phase</th><th>Budgeted Hours</th><th>Budgeted Fees</th><th></th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="4" class="muted">No phases configured.</td></tr>'}</tbody>
-      </table>
-    </div>
-  `;
-}
-
-async function renderEngagement(id, subroute = '') {
-  if (subroute === 'team') return renderTeamConfig(id);
-  if (subroute === 'import') return renderImport(id);
-  if (subroute === 'adjustments') return renderAdjustments(id);
-  if (subroute === 'history') return renderHistory(id);
-  if (subroute === 'export') return renderExport(id);
-
-  setPage('Engagement', loadingCard());
-  try {
-    const data = await api(`/api/engagements/${id}`);
-    const e = data.engagement;
-    const m = data.metrics;
-    const isClosed = e.status === 'Closed';
-    setPage(
-      e.client_name,
-      `
-      ${engagementTabs(id)}
-      <div class="card stack">
-        <div class="row between wrap">
-          <div>
-            <div class="section-title">${escapeHtml(e.client_name)}</div>
-            <div class="muted small">${escapeHtml(e.engagement_code)} - ${escapeHtml(e.engagement_lead || 'No lead')} - ${escapeHtml(e.model_type || 'No model type')}</div>
-          </div>
-          <div class="row">${statusBadge(m.status)}${isClosed ? '<span class="badge neutral">Closed</span>' : `<button class="btn secondary" id="close-engagement">${svgIcon('file')}Close and Export</button>`}</div>
-        </div>
-      </div>
-      ${isClosed ? completionPanel(id, e) : ''}
-      <div class="grid metric-grid" style="margin-top:16px">
-        ${metricCard('Total Budgeted Hours', num(m.total_budgeted_hours))}
-        ${metricCard('Hours To Date', num(m.hours_to_date))}
-        ${metricCard('Hours Remaining', `${num(m.hours_remaining)} - ${pct(m.hours_remaining_pct)}`)}
-        ${metricCard('Fees To Date', money(m.fees_to_date_contract))}
-      </div>
-      <div class="grid two-col" style="margin-top:16px">
-        <div class="card stack">
-          <div class="row between"><h2 class="section-title">Budget Position</h2><strong>${money(m.net_budget)}</strong></div>
-          <div class="progress ${progressClass(m.utilization_pct, m.status)}"><span style="width:${Math.min(m.utilization_pct * 100, 100)}%"></span></div>
-          <div class="row wrap muted small">
-            <span>Projected final: ${money(m.projected_final)}</span>
-            <span>Budget remaining: ${money(m.budget_remaining)}</span>
-            <span>Markdown required: ${m.markdown_required ? 'Yes' : 'No'}</span>
-            <span>Estimated markdown: ${money(m.markdown_needed)}</span>
-          </div>
-          ${budgetGraph(m)}
-        </div>
-        <div class="card stack">
-          <div class="card-title"><h2>Week by Week Hours</h2><a class="btn secondary" href="/engagements/${id}/history" data-link>History</a></div>
-          ${weeklyHoursChart(data.weekly_summary || [])}
-        </div>
-      </div>
-      <div class="grid two-col" style="margin-top:16px">
-        <div class="card stack">
-          <div class="card-title"><h2>Recent Imports</h2></div>
-          ${recentImports(data.recent_imports)}
-        </div>
-        <div class="card stack">
-          <div class="card-title"><h2>Adjustments Summary</h2><strong>${money(m.adjustment_total)}</strong></div>
-          ${adjustmentsList(data.adjustments)}
-        </div>
-      </div>
-      <div class="card" style="margin-top:16px">
-        <div class="card-title"><h2>Team</h2></div>
-        ${teamSummaryTable(data.team)}
-      </div>
-      `
-    );
-    bindLinks();
-    bindCompletionActions(id);
-    document.getElementById('close-engagement')?.addEventListener('click', async () => {
-      if (!confirm('Close this engagement and export a final HTML report?')) return;
-      const reportWindow = window.open('', '_blank');
-      try {
-        await api(`/api/engagements/${id}`, { method: 'PUT', body: { status: 'Closed' } });
-        const reportUrl = `/api/engagements/${id}/export/html?narrative=${encodeURIComponent('Final engagement report')}`;
-        if (reportWindow) reportWindow.location = reportUrl;
-        else window.open(reportUrl, '_blank');
-        showToast('Engagement closed and final report opened');
-        renderEngagement(id);
-      } catch (error) {
-        if (reportWindow) reportWindow.close();
-        showToast(error.message);
-      }
-    });
-  } catch (error) {
-    setPage('Engagement', `<div class="card">${escapeHtml(error.message)}</div>`);
-  }
-}
-
-function engagementTabs(id) {
-  const tabs = [
-    ['Overview', `/engagements/${id}`],
-    ['Team & Budget', `/engagements/${id}/team`],
-    ['Import', `/engagements/${id}/import`],
-    ['Adjustments', `/engagements/${id}/adjustments`],
-    ['History', `/engagements/${id}/history`],
-    ['Export', `/engagements/${id}/export`],
-  ];
-  const current = window.location.pathname;
-  return `<div class="row wrap" style="margin-bottom:16px">${tabs
-    .map(([label, path]) => `<a class="btn ${current === path ? 'primary' : 'secondary'}" href="${path}" data-link>${label}</a>`)
-    .join('')}</div>`;
-}
-
-function recentImports(imports) {
-  if (!imports.length) return '<div class="muted small">No imports yet.</div>';
-  return imports
-    .map((item) => `<div class="row between small"><span>${escapeHtml(item.week_end_date)}</span><span>${item.row_count} rows - ${num(item.hours)} hrs</span></div>`)
-    .join('');
-}
-
-function teamSummaryTable(team) {
-  if (!team.length) return '<div class="empty">No team configured.</div>';
-  return `
-    <div class="table-wrap"><table>
-      <thead><tr><th>Name</th><th>Role</th><th>Budgeted Hours</th><th>Hours To Date</th><th>Remaining</th><th>Remaining %</th><th>Engagement Rate</th><th>Fees</th><th>Rate Difference</th></tr></thead>
-      <tbody>
-      ${team
-        .map((member) => {
-          const cls = member.remaining_pct > 0.3 ? 'row-green' : member.remaining_pct >= 0.1 ? 'row-amber' : 'row-red';
-          return `<tr class="${cls}"><td>${escapeHtml(member.name)}</td><td>${escapeHtml(member.role)}</td><td>${num(member.budgeted_hours)}</td><td>${num(member.hours_to_date)}</td><td>${num(member.hours_remaining)}</td><td>${pct(member.remaining_pct)}</td><td>${money(member.engagement_rate)}</td><td>${money(member.fees_to_date)}</td><td>${money(member.rate_diff_total)}</td></tr>`;
-        })
-        .join('')}
-      </tbody>
-    </table></div>
-  `;
-}
-
-function adjustmentsList(adjustments) {
-  if (!adjustments.length) return '<div class="muted small">No adjustments logged.</div>';
-  return adjustments
-    .map((adj) => `<div class="row between small"><span>${escapeHtml(adj.effective_date)} - ${escapeHtml(adj.adjustment_type)}</span><strong>${money(adj.amount)}</strong></div>`)
-    .join('');
-}
-
-function completionPanel(id, engagement) {
-  return `
-    <div class="completion-panel">
-      <div>
-        <div class="section-title">Final reporting complete</div>
-        <div class="muted small">Final reports remain available until this engagement is cleared from the database.</div>
-      </div>
-      <div class="row wrap">
-        <a class="btn primary" href="/api/engagements/${id}/export/html?narrative=${encodeURIComponent('Final engagement report')}" target="_blank" rel="noopener noreferrer">${svgIcon('file')}Final HTML / PDF</a>
-        <a class="btn secondary" href="/api/engagements/${id}/export/excel">${svgIcon('file')}Final Excel</a>
-        <button class="btn danger" id="clear-engagement">${svgIcon('trash')}Clear Engagement Data</button>
-      </div>
-    </div>
-  `;
-}
-
-function bindCompletionActions(id) {
-  document.getElementById('clear-engagement')?.addEventListener('click', async () => {
-    const confirmed = confirm('Clear this closed engagement and all related budgets, imports, adjustments, and time entries from the database? This cannot be undone.');
-    if (!confirmed) return;
-    await api(`/api/engagements/${id}`, { method: 'DELETE' });
-    showToast('Engagement cleared');
-    navigate('/dashboard');
-  });
-}
-
-function chartMax(items, key) {
-  return Math.max(1, ...items.map((item) => Number(item[key] || 0)));
-}
-
-function weeklyHoursChart(weeks) {
-  if (!weeks.length) return '<div class="empty">No weekly hours loaded yet.</div>';
-  const maxHours = chartMax(weeks, 'hours');
-  return `
-    <div class="bar-chart weekly-hours-chart">
-      ${weeks
-        .map((week) => {
-          const width = Math.max(3, Math.min(100, (Number(week.hours || 0) / maxHours) * 100));
-          return `<div class="bar-row"><div class="bar-label">${escapeHtml(week.week_end_date || 'No date')}</div><div class="bar-track"><span style="width:${width}%"></span></div><strong>${num(week.hours)}</strong></div>`;
-        })
-        .join('')}
-    </div>
-  `;
-}
-
-function weeklyHoursTable(weeks) {
-  if (!weeks.length) return '<div class="empty">No weekly hours loaded yet.</div>';
-  return `
-    <div class="table-wrap"><table>
-      <thead><tr><th>Week End</th><th>Hours</th><th>Fees</th><th>Entries</th><th>Cumulative Hours</th><th>Cumulative Fees</th></tr></thead>
-      <tbody>${weeks
-        .map((week) => `<tr><td>${escapeHtml(week.week_end_date || '')}</td><td>${num(week.hours)}</td><td>${money(week.fees)}</td><td>${week.entries || 0}</td><td>${num(week.cumulative_hours)}</td><td>${money(week.cumulative_fees)}</td></tr>`)
-        .join('')}</tbody>
-    </table></div>
-  `;
-}
-
-function budgetGraph(metrics) {
-  const rows = [
-    ['Net Budget', metrics.net_budget, 'navy'],
-    ['Gross Projected Fees', metrics.gross_projected_fees ?? metrics.projected_final, 'blue'],
-    ['Projected Final', metrics.projected_final, 'green'],
-    ['Fees To Date', metrics.fees_to_date_contract, 'amber'],
-  ];
-  const maxValue = Math.max(1, ...rows.map((row) => Number(row[1] || 0)));
-  return `
-    <div class="bar-chart budget-chart">
-      ${rows
-        .map(([label, value, tone]) => {
-          const width = Math.max(3, Math.min(100, (Number(value || 0) / maxValue) * 100));
-          return `<div class="bar-row ${tone}"><div class="bar-label">${label}</div><div class="bar-track"><span style="width:${width}%"></span></div><strong>${money(value)}</strong></div>`;
-        })
-        .join('')}
-    </div>
-  `;
-}
 async function renderTeamConfig(id) {
-  const [data, settings] = await Promise.all([api(`/api/engagements/${id}`), api('/api/settings/rates')]);
-  const model = JSON.parse(JSON.stringify(data));
-  const removedMembers = new Set();
-  const removedPhases = new Set();
-
-  function draw() {
-    setPage(
-      'Team & Budget',
-      `
-      ${engagementTabs(id)}
-      <div class="card stack">
-        ${engagementConfigFields(model.engagement)}
-        <div class="row between"><h2 class="section-title">Team</h2><button class="btn secondary" id="add-team">${svgIcon('plus')}Add Row</button></div>
-        ${configTeamTable(model.team, settings.rates)}
-        <div class="row between"><h2 class="section-title">Phases</h2><button class="btn secondary" id="add-phase">${svgIcon('plus')}Add Phase</button></div>
-        ${configPhaseTable(model.phases)}
-        <div class="row"><button class="btn primary" id="save-config">${svgIcon('save')}Save Changes</button></div>
-      </div>
-      `
-    );
-    bindLinks();
-    bindConfig();
-  }
-
-  function bindConfig() {
-    document.querySelectorAll('[data-config-engagement]').forEach((field) => {
-      field.addEventListener('input', () => {
-        model.engagement[field.dataset.configEngagement] = coerceField(field);
-      });
+  try {
+    const [data,settings]=await Promise.all([api(`/api/engagements/${id}`),api('/api/settings/rates')]);const e=data.engagement;
+    const memberRows=data.team.map((x)=>`<tr data-member-id="${x.id}"><td><input name="name" value="${esc(x.name)}"></td><td><select name="role">${Object.keys(settings.rates).map(r=>`<option ${r===x.role?'selected':''}>${esc(r)}</option>`).join('')}</select></td><td><input name="internal_rate" type="number" value="${x.internal_rate}"></td><td><input name="engagement_rate" type="number" value="${x.engagement_rate}"></td><td><input name="contract_rate" type="number" value="${x.contract_rate}"></td><td><input name="dte_rate" type="number" value="${x.dte_rate}"></td><td><input name="budgeted_hours" type="number" value="${x.budgeted_hours}" ${e.status!=='planning'?'disabled':''}></td><td><input name="is_offshore" type="checkbox" ${x.is_offshore?'checked':''}></td></tr>`).join('');
+    const phases=data.phases.map((p)=>`<tr data-phase-id="${p.id}"><td><a href="/engagements/${id}/phases/${p.id}" data-link>${esc(p.phase_name)}</a></td><td><input name="phase_code" value="${esc(p.phase_code||'')}"></td><td><input name="sow_fees" type="number" value="${p.sow_fees}" ${e.status!=='planning'?'disabled':''}></td><td>${num(p.budgeted_hours)}</td></tr>`).join('');
+    shell('Team and budget', `${engagementTabs(id,e.complexity_mode)}<section class="card"><div class="section-heading"><div><span class="eyebrow">Configuration</span><h2>Team rates and hours</h2></div><span>${statusBadge(e.status)}</span></div><div class="table-wrap"><table id="team-config"><thead><tr><th>Name</th><th>Role</th><th>Std</th><th>Engagement</th><th>Contract</th><th>DTE</th><th>Hours</th><th>OS</th></tr></thead><tbody>${memberRows}</tbody></table></div></section>
+      <section class="card"><h2>Phases</h2><div class="table-wrap"><table id="phase-config"><thead><tr><th>Phase</th><th>Code</th><th>Signed SOW</th><th>Budget hours</th></tr></thead><tbody>${phases}</tbody></table></div></section>
+      <div class="form-actions"><button class="btn primary" id="save-config">Save configuration</button></div>`);
+    document.getElementById('save-config').addEventListener('click',async()=>{
+      try{
+        for(const row of document.querySelectorAll('[data-member-id]')){const body=formObject(rowToForm(row));body.is_offshore=row.querySelector('[name=is_offshore]').checked;await api(`/api/engagements/${id}/team/${row.dataset.memberId}`,{method:'PUT',body});if(e.status==='planning'&&e.complexity_mode==='simple')await api(`/api/engagements/${id}/phase-weeks`,{method:'PUT',body:{rows:[{phase_id:data.phases[0].id,team_member_id:Number(row.dataset.memberId),week_start_date:null,budgeted_hours:Number(body.budgeted_hours||0)}]}});}
+        for(const row of document.querySelectorAll('[data-phase-id]')){const body=formObject(rowToForm(row));await api(`/api/engagements/${id}/phases/${row.dataset.phaseId}`,{method:'PUT',body});}
+        toast('Configuration saved');renderTeamConfig(id);
+      }catch(error){if(error.details?.code==='budget_locked'){const d=error.details;history.pushState({},'',`/engagements/${id}/revisions?target_type=${d.target_type}&target_id=${d.target_id}`);render();}else toast(error.message,'error');}
     });
-    document.querySelectorAll('[data-config-team]').forEach((field) => {
-      field.addEventListener('input', () => {
-        const member = model.team[Number(field.dataset.index)];
-        member[field.dataset.configTeam] = coerceField(field);
-        if (field.dataset.configTeam === 'role') {
-          const rate = settings.rates[field.value] || 0;
-          member.internal_rate = rate;
-          member.engagement_rate = rate;
-          draw();
-        }
-      });
-    });
-    document.querySelectorAll('[data-config-phase]').forEach((field) => {
-      field.addEventListener('input', () => {
-        model.phases[Number(field.dataset.index)][field.dataset.configPhase] = coerceField(field);
-      });
-    });
-    document.querySelectorAll('[data-remove-member]').forEach((button) => {
-      button.addEventListener('click', async () => {
-        const index = Number(button.dataset.removeMember);
-        const member = model.team[index];
-        if (member.id) removedMembers.add(member.id);
-        model.team.splice(index, 1);
-        draw();
-      });
-    });
-    document.querySelectorAll('[data-remove-phase-row]').forEach((button) => {
-      button.addEventListener('click', () => {
-        const index = Number(button.dataset.removePhaseRow);
-        const phase = model.phases[index];
-        if (phase.id) removedPhases.add(phase.id);
-        model.phases.splice(index, 1);
-        draw();
-      });
-    });
-    document.getElementById('add-team')?.addEventListener('click', () => {
-      model.team.push(blankMember(settings.rates));
-      draw();
-    });
-    document.getElementById('add-phase')?.addEventListener('click', () => {
-      model.phases.push({ phase_name: '', budgeted_hours: 0, budgeted_eng_fees: 0, sort_order: model.phases.length });
-      draw();
-    });
-    document.getElementById('save-config')?.addEventListener('click', async () => {
-      try {
-        await api(`/api/engagements/${id}`, { method: 'PUT', body: model.engagement });
-        for (const memberId of removedMembers) await api(`/api/engagements/${id}/team/${memberId}`, { method: 'DELETE' });
-        for (const phaseId of removedPhases) await api(`/api/engagements/${id}/phases/${phaseId}`, { method: 'DELETE' });
-        for (const member of model.team.filter((item) => item.name?.trim())) {
-          if (member.id) await api(`/api/engagements/${id}/team/${member.id}`, { method: 'PUT', body: member });
-          else await api(`/api/engagements/${id}/team`, { method: 'POST', body: member });
-        }
-        for (const [index, phase] of model.phases.filter((item) => item.phase_name?.trim()).entries()) {
-          phase.sort_order = index;
-          if (phase.id) await api(`/api/engagements/${id}/phases/${phase.id}`, { method: 'PUT', body: phase });
-          else await api(`/api/engagements/${id}/phases`, { method: 'POST', body: phase });
-        }
-        showToast('Changes saved');
-        renderTeamConfig(id);
-      } catch (error) {
-        showToast(error.message);
-      }
-    });
-  }
-
-  draw();
+  }catch(error){shell('Team and budget',errorPanel(error));}
 }
 
-function engagementConfigFields(e) {
-  return `
-    <div class="form-grid three">
-      ${configInput('Engagement Code', 'engagement_code', e.engagement_code)}
-      ${configInput('Client Name', 'client_name', e.client_name)}
-      ${configInput('Engagement Lead', 'engagement_lead', e.engagement_lead)}
-      ${configSelect('Model Type', 'model_type', e.model_type, MODEL_TYPES)}
-      ${configInput('Model Vendor', 'model_vendor', e.model_vendor)}
-      ${configInput('First Week with Entry', 'first_week_with_entry', e.first_week_with_entry, 'date')}
-      ${configInput('Max SOW Fees', 'max_sow_fees', e.max_sow_fees, 'number')}
-      ${configInput('Change Order Amount', 'change_order_amt', e.change_order_amt, 'number')}
-      ${configInput('C360 Amount', 'c360_amount', e.c360_amount, 'number')}
-      ${configInput('BIMA Amount', 'bima_amount', e.bima_amount, 'number')}
-      <div class="field"><label>C360 Used</label><select data-config-engagement="c360_used"><option value="0" ${!e.c360_used ? 'selected' : ''}>No</option><option value="1" ${e.c360_used ? 'selected' : ''}>Yes</option></select></div>
-      <div class="field"><label>Status</label><select data-config-engagement="status"><option ${e.status === 'Active' ? 'selected' : ''}>Active</option><option ${e.status === 'Closed' ? 'selected' : ''}>Closed</option></select></div>
-    </div>
-  `;
-}
+function rowToForm(row){const form=document.createElement('form');row.querySelectorAll('input,select').forEach(node=>form.append(node.cloneNode(true)));return form;}
 
-function configInput(label, name, value, type = 'text') {
-  return `<div class="field"><label>${label}</label><input type="${type}" step="0.01" data-config-engagement="${name}" value="${escapeHtml(value)}"></div>`;
-}
-
-function configSelect(label, name, value, options) {
-  return selectField(label, name, value, options, 'data-config-engagement');
-}
-
-function configTeamTable(team) {
-  const rows = team
-    .map(
-      (member, index) => `
-      <tr>
-        <td><input data-config-team="name" data-index="${index}" value="${escapeHtml(member.name)}"></td>
-        <td><select data-config-team="role" data-index="${index}">${ROLES.map((role) => `<option value="${role}" ${role === member.role ? 'selected' : ''}>${role}</option>`).join('')}</select></td>
-        <td><input type="number" step="0.01" data-config-team="internal_rate" data-index="${index}" value="${member.internal_rate || 0}"></td>
-        <td><input type="number" step="0.01" data-config-team="engagement_rate" data-index="${index}" value="${member.engagement_rate || 0}"></td>
-        <td><input type="number" step="0.1" data-config-team="budgeted_hours" data-index="${index}" value="${member.budgeted_hours || 0}"></td>
-        <td><button class="btn icon secondary" title="Remove" data-remove-member="${index}">${svgIcon('trash')}</button></td>
-      </tr>`
-    )
-    .join('');
-  return `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Crowe Bill Rate</th><th>Negotiated Rate</th><th>Budgeted Hours</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
-}
-
-function configPhaseTable(phases) {
-  const rows = phases
-    .map(
-      (phase, index) => `
-      <tr>
-        <td><input data-config-phase="phase_name" data-index="${index}" value="${escapeHtml(phase.phase_name)}"></td>
-        <td><input type="number" step="0.1" data-config-phase="budgeted_hours" data-index="${index}" value="${phase.budgeted_hours || 0}"></td>
-        <td><input type="number" step="0.01" data-config-phase="budgeted_eng_fees" data-index="${index}" value="${phase.budgeted_eng_fees || 0}"></td>
-        <td><button class="btn icon secondary" title="Remove" data-remove-phase-row="${index}">${svgIcon('trash')}</button></td>
-      </tr>`
-    )
-    .join('');
-  return `<div class="table-wrap"><table><thead><tr><th>Phase</th><th>Budgeted Hours</th><th>Budgeted Fees</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="muted">No phases configured.</td></tr>'}</tbody></table></div>`;
+async function renderPhaseDetail(id,phaseId) {
+  try{
+    const [detail,parent]=await Promise.all([api(`/api/engagements/${id}/phases/${phaseId}`),api(`/api/engagements/${id}`)]);const p=detail.phase,e=parent.engagement;
+    const grid=detail.grid;const rows=grid.rows.map((r)=>`<tr><th>${esc(r.member.name)} ${r.member.is_offshore?'<span class="os-badge">OS</span>':''}</th>${r.cells.map(c=>`<td class="${c.variance_flagged?'variance':''}"><label>B <input type="number" data-cell="budgeted" data-phase="${phaseId}" data-member="${r.member.id}" data-week="${c.week_start_date}" value="${c.budgeted_hours}" ${e.status!=='planning'?'disabled':''}></label><label>A <output>${num(c.actual_hours)}</output></label><label>F <input type="number" data-cell="forecasted" data-phase="${phaseId}" data-member="${r.member.id}" data-week="${c.week_start_date}" value="${c.forecasted_hours}" ${e.status==='closed'?'disabled':''}></label></td>`).join('')}</tr>`).join('');
+    shell(p.phase_name, `${engagementTabs(id,e.complexity_mode)}<section class="phase-header"><div><span class="eyebrow">${esc(p.phase_code||'No phase code')}</span><h2>${money(p.effective_sow)} effective SOW</h2></div>${statusBadge(p.status)}</section>
+      <section class="metrics four">${metric('Budget hours',num(p.budgeted_hours))}${metric('Actual hours',num(p.actual_hours))}${metric('Contract fees',money(p.actual_contract_fees))}${metric('DTE tracking',money(p.actual_dte_fees))}</section>
+      <section class="card"><div class="section-heading"><h2>Weekly budget, actual and forecast</h2><button class="btn secondary" id="phase-change-order">Add change order</button></div><div class="weekly-grid-wrap"><table class="weekly-grid"><thead><tr><th>Team member</th>${grid.weeks.map(w=>`<th>${new Date(`${w}T12:00:00`).toLocaleDateString('en-US',{month:'short',day:'numeric'})}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div><div class="legend"><span>B Budget</span><span>A Actual</span><span>F Forecast</span><span class="variance-key">Variance review</span></div><button class="btn primary" id="save-grid">Save weekly grid</button></section>`);
+    document.getElementById('phase-change-order').addEventListener('click',()=>{history.pushState({},'',`/engagements/${id}/adjustments?phase=${phaseId}`);render();});
+    document.getElementById('save-grid').addEventListener('click',async()=>{const map={};document.querySelectorAll('[data-cell]').forEach(input=>{const key=`${input.dataset.phase}:${input.dataset.member}:${input.dataset.week}`;map[key]??={phase_id:Number(input.dataset.phase),team_member_id:Number(input.dataset.member),week_start_date:input.dataset.week};map[key][`${input.dataset.cell}_hours`]=Number(input.value||0);});try{await api(`/api/engagements/${id}/phase-weeks`,{method:'PUT',body:{rows:Object.values(map)}});toast('Weekly grid saved');renderPhaseDetail(id,phaseId);}catch(error){toast(error.message,'error');}});
+  }catch(error){shell('Phase detail',errorPanel(error));}
 }
 
 async function renderImport(id) {
-  setPage(
-    'Weekly Import',
-    `
-    ${engagementTabs(id)}
-    <div class="grid two-col">
-      <div class="card stack">
-        <div class="import-source">
-          <div>
-            <div class="section-title">Cognos source report</div>
-            <div class="muted small">Open the Power BI report, export the current weekly data, then upload or paste it below.</div>
-          </div>
-          <a class="btn secondary" href="${COGNOS_REPORT_URL}" target="_blank" rel="noopener noreferrer">${svgIcon('upload')}Open Cognos Report</a>
-        </div>
-        <div class="field"><label>Paste Cognos Export</label><textarea id="import-text"></textarea></div>
-        <div class="field"><label>Upload CSV or XLSX</label><input type="file" id="import-file" accept=".csv,.txt,.xlsx"></div>
-        <button class="btn primary" id="preview-import">${svgIcon('upload')}Preview Import</button>
-      </div>
-      <div class="card stack" id="import-summary"><div class="muted">No preview loaded.</div></div>
-    </div>
-    <div id="preview-table" style="margin-top:16px"></div>
-    `
-  );
-  bindLinks();
-  let previewRows = [];
-  document.getElementById('preview-import').addEventListener('click', async () => {
-    try {
-      const file = document.getElementById('import-file').files[0];
-      let data;
-      if (file) {
-        const form = new FormData();
-        form.append('file', file);
-        const response = await fetch(`/api/engagements/${id}/import/preview`, { method: 'POST', body: form });
-        const payload = await response.json();
-        if (!response.ok || payload.error) throw new Error(payload.error?.message || 'Import failed');
-        data = payload.data;
-      } else {
-        data = await api(`/api/engagements/${id}/import/preview`, {
-          method: 'POST',
-          body: { text: document.getElementById('import-text').value },
-        });
-      }
-      previewRows = data.rows;
-      drawPreview(data.summary, previewRows);
-    } catch (error) {
-      showToast(error.message);
-    }
-  });
+  try{
+    const data=await api(`/api/engagements/${id}`),e=data.engagement;
+    const unresolved=await api(`/api/engagements/${id}/unmatched-phases`);
+    const options=data.phases.map(p=>`<option value="${p.id}">${esc(p.phase_name)}</option>`).join('');
+    const resolution=unresolved.length?`<section class="card"><h2>Previously imported unmatched time</h2>${unresolved.map((x,i)=>`<div class="resolution-row"><span><b>${esc(x.phase_desc||'(blank)')}</b> · ${num(x.hours)} hours</span><select data-resolve="${i}">${options}</select><button class="btn secondary" data-assign="${i}" data-desc="${esc(x.phase_desc||'')}">Assign</button></div>`).join('')}</section>`:'';
+    shell('Weekly import', `${engagementTabs(id,e.complexity_mode)}${resolution}<section class="card import-card"><div><span class="eyebrow">Cognos actuals</span><h2>Preview before committing</h2><p>Upload the raw workbook or paste the full tab-delimited export. Header preambles and summary footers are handled automatically.</p></div><label class="upload-zone"><input id="import-file" type="file" accept=".xlsx,.csv,.txt"><strong>Choose a Cognos file</strong><span>.xlsx, .csv or .txt</span></label><label class="field"><span>Or paste export</span><textarea id="import-text" rows="8"></textarea></label><button class="btn primary" id="preview-import">Preview import</button></section><div id="preview-area"></div>`);
+    document.querySelectorAll('[data-assign]').forEach((button)=>button.addEventListener('click',async()=>{const select=document.querySelector(`[data-resolve="${button.dataset.assign}"]`);try{await api(`/api/engagements/${id}/unmatched-phases`,{method:'PATCH',body:{phase_id:Number(select.value),phase_desc:button.dataset.desc}});toast('Unmatched time assigned');renderImport(id);}catch(error){toast(error.message,'error');}}));
+    document.getElementById('preview-import').addEventListener('click',async()=>{try{let preview;const file=document.getElementById('import-file').files[0];if(file){const form=new FormData();form.append('file',file);const response=await fetch(`/api/engagements/${id}/import/preview`,{method:'POST',body:form});const body=await response.json();if(!response.ok)throw new Error(body.error?.message);preview=body.data;}else preview=await api(`/api/engagements/${id}/import/preview`,{method:'POST',body:{text:document.getElementById('import-text').value}});drawImportPreview(id,preview,data.phases);}catch(error){toast(error.message,'error');}});
+  }catch(error){shell('Weekly import',errorPanel(error));}
+}
 
-  function drawPreview(summary, rows) {
-    document.getElementById('import-summary').innerHTML = `
-      ${miniMetric('Rows', summary.total)}
-      ${miniMetric('To Import', summary.to_import)}
-      ${miniMetric('Duplicates', summary.duplicates)}
-      ${miniMetric('Flagged', summary.flagged)}
-      <div class="field"><label>Snapshot Notes</label><textarea id="import-notes" style="min-height:80px"></textarea></div>
-      <button class="btn primary" id="commit-import">${svgIcon('save')}Commit Import</button>
-    `;
-    document.getElementById('preview-table').innerHTML = `
-      <div class="card">
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Include</th><th>Transaction</th><th>Worker</th><th>Week End</th><th>Hours</th><th>Fees</th><th>Flag</th><th>Memo</th></tr></thead>
-            <tbody>
-              ${rows
-                .map(
-                  (row) => `
-                  <tr class="flag-${row.flag || ''}">
-                    <td><input type="checkbox" data-preview-id="${escapeHtml(row.transaction_id)}" ${row.included ? 'checked' : ''} ${row.selectable ? '' : 'disabled'}></td>
-                    <td>${escapeHtml(row.transaction_id)}</td>
-                    <td>${escapeHtml(row.worker_name)}</td>
-                    <td>${escapeHtml(row.week_end_date)}</td>
-                    <td>${num(row.hours)}</td>
-                    <td>${money(row.fees_contract_rate)}</td>
-                    <td>${escapeHtml(row.flag || '')}</td>
-                    <td>${escapeHtml(row.memo)}</td>
-                  </tr>`
-                )
-                .join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    `;
-    document.getElementById('commit-import').addEventListener('click', async () => {
-      const checks = [...document.querySelectorAll('[data-preview-id]')];
-      const included = checks.filter((item) => item.checked && !item.disabled).map((item) => item.dataset.previewId);
-      const excluded = checks.filter((item) => !item.checked && !item.disabled).map((item) => item.dataset.previewId);
-      try {
-        const result = await api(`/api/engagements/${id}/import/commit`, {
-          method: 'POST',
-          body: {
-            included_transaction_ids: included,
-            excluded_transaction_ids: excluded,
-            notes: document.getElementById('import-notes').value,
-          },
-        });
-        showToast(`Imported ${result.imported} rows`);
-        navigate(`/engagements/${id}/history`);
-      } catch (error) {
-        showToast(error.message);
-      }
-    });
-  }
+function drawImportPreview(id,preview,phases) {
+  const area=document.getElementById('preview-area');const unmatched=[...new Set(preview.rows.filter(r=>r.flags?.includes('unmatched_phase')).map(r=>r.phase_desc))];
+  const assigns=unmatched.map((desc,i)=>`<label class="field compact"><span>Assign “${esc(desc||'(blank)')}” to</span><select data-phase-assignment="${esc(desc)}"><option value="">Leave unmatched</option>${phases.map(p=>`<option value="${p.id}">${esc(p.phase_name)}</option>`).join('')}</select></label>`).join('');
+  const rows=preview.rows.map((r)=>`<tr class="${r.flag||''}"><td><input type="checkbox" data-include="${esc(r.transaction_id)}" ${r.included?'checked':''} ${r.selectable?'':'disabled'}></td><td>${esc(r.worker_name)}</td><td>${esc(r.week_end_date)}</td><td>${esc(r.phase_desc||'Unmatched')}</td><td>${num(r.hours)}</td><td>${money(r.fees_contract_rate)}</td><td>${(r.flags||[]).map(f=>`<span class="flag">${esc(f.replaceAll('_',' '))}</span>`).join('')}</td></tr>`).join('');
+  area.innerHTML=`<section class="metrics four">${metric('Rows',preview.summary.total)}${metric('Ready',preview.summary.to_import)}${metric('Duplicates',preview.summary.duplicates)}${metric('Flagged',preview.summary.flagged)}</section>${assigns?`<section class="card"><h2>Phase assignments</h2><div class="assignment-grid">${assigns}</div></section>`:''}<section class="card"><div class="table-wrap"><table><thead><tr><th>Use</th><th>Worker</th><th>Week end</th><th>Phase</th><th>Hours</th><th>Contract fees</th><th>Review</th></tr></thead><tbody>${rows}</tbody></table></div><label class="field"><span>Snapshot notes</span><textarea id="import-notes"></textarea></label><button class="btn primary" id="commit-import">Commit import</button></section>`;
+  document.getElementById('commit-import').addEventListener('click',async()=>{const included_transaction_ids=[...document.querySelectorAll('[data-include]:checked')].map(x=>x.dataset.include);const phase_assignments={};document.querySelectorAll('[data-phase-assignment]').forEach(x=>{if(x.value)phase_assignments[x.dataset.phaseAssignment]=Number(x.value);});try{const result=await api(`/api/engagements/${id}/import/commit`,{method:'POST',body:{included_transaction_ids,phase_assignments,notes:document.getElementById('import-notes').value}});toast(`Imported ${result.imported} rows`);renderImport(id);}catch(error){toast(error.message,'error');}});
 }
 
 async function renderAdjustments(id) {
-  const data = await api(`/api/engagements/${id}`);
-  const rows = data.adjustments;
-  setPage(
-    'Adjustments',
-    `
-    ${engagementTabs(id)}
-    <div class="grid two-col">
-      <div class="card">
-        <div class="card-title"><h2>Adjustment Log</h2><strong>${money(data.metrics.adjustment_total)}</strong></div>
-        ${adjustmentsTable(rows)}
-      </div>
-      <div class="card stack">
-        <h2 class="section-title" id="adjustment-form-title">Add Adjustment</h2>
-        <input type="hidden" id="adjustment-id">
-        ${selectField('Type', 'adjustment_type', '', ADJUSTMENT_TYPES, 'id')}
-        <div class="field"><label>Effective Date</label><input type="date" id="effective_date"></div>
-        <div class="field"><label>Amount</label><input type="number" step="0.01" id="amount"></div>
-        <div class="field"><label>Description</label><textarea id="description" style="min-height:90px"></textarea></div>
-        <button class="btn primary" id="save-adjustment">${svgIcon('save')}Save Adjustment</button>
-      </div>
-    </div>
-    `
-  );
-  bindLinks();
-  bindAdjustments(id, rows);
+  try{
+    const data=await api(`/api/engagements/${id}`),e=data.engagement;const selected=new URLSearchParams(location.search).get('phase')||'';
+    const rows=data.adjustments.map(x=>`<tr><td>${esc(x.effective_date||'')}</td><td>${esc(x.adjustment_type)}</td><td>${esc(x.phase_name||'Engagement-wide')}</td><td>${money(x.amount)}</td><td>${esc(x.description||'')}</td><td><button class="icon-btn" data-delete-adjustment="${x.id}">×</button></td></tr>`).join('');
+    shell('Budget adjustments', `${engagementTabs(id,e.complexity_mode)}<div class="split-layout"><section class="card"><h2>Adjustment ledger</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Type</th><th>Phase</th><th>Amount</th><th>Description</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="6">No adjustments</td></tr>'}</tbody></table></div></section><section class="card side-form"><h2>Add adjustment</h2><form id="adjustment-form">${select('Type','adjustment_type','markdown',['markdown','c360','bima','change_order'])}${field('Effective date','effective_date','', 'date')}${select('Phase','phase_id',selected,[['','Engagement-wide'],...data.phases.map(p=>[p.id,p.phase_name])])}${field('Amount','amount','', 'number','step="0.01"')}<label class="field"><span>Description</span><textarea name="description"></textarea></label><button class="btn primary">Save adjustment</button></form></section></div>`);
+    const form=document.getElementById('adjustment-form');const phase=form.elements.phase_id;function phaseRule(){const change=form.elements.adjustment_type.value==='change_order';phase.closest('.field').hidden=!change;phase.required=change;}form.elements.adjustment_type.addEventListener('change',phaseRule);phaseRule();
+    form.addEventListener('submit',async(event)=>{event.preventDefault();const body=formObject(form);body.phase_id=body.phase_id?Number(body.phase_id):null;try{await api(`/api/engagements/${id}/adjustments`,{method:'POST',body});toast('Adjustment saved');renderAdjustments(id);}catch(error){toast(error.message,'error');}});
+    document.querySelectorAll('[data-delete-adjustment]').forEach(b=>b.addEventListener('click',async()=>{if(!confirm('Delete this adjustment?'))return;await api(`/api/engagements/${id}/adjustments/${b.dataset.deleteAdjustment}`,{method:'DELETE'});renderAdjustments(id);}));
+  }catch(error){shell('Budget adjustments',errorPanel(error));}
 }
 
-function adjustmentsTable(rows) {
-  if (!rows.length) return '<div class="empty">No adjustments logged.</div>';
-  return `
-    <div class="table-wrap"><table>
-      <thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Description</th><th></th></tr></thead>
-      <tbody>${rows
-        .map((row) => `<tr><td>${escapeHtml(row.effective_date)}</td><td>${escapeHtml(row.adjustment_type)}</td><td>${money(row.amount)}</td><td>${escapeHtml(row.description)}</td><td class="row"><button class="btn icon secondary" title="Edit" data-edit-adjustment="${row.id}">${svgIcon('edit')}</button><button class="btn icon secondary" title="Delete" data-delete-adjustment="${row.id}">${svgIcon('trash')}</button></td></tr>`)
-        .join('')}</tbody>
-    </table></div>
-  `;
+async function renderRevisions(id) {
+  try{const data=await api(`/api/engagements/${id}`),e=data.engagement;const rows=data.revisions.map(x=>`<tr><td>${esc(x.revised_at)}</td><td>${esc(x.phase_name||x.team_member_name||'Engagement')}</td><td>${esc(x.field_name)}</td><td>${num(x.old_value,2)}</td><td>${num(x.new_value,2)}</td><td>${esc(x.reason)}</td></tr>`).join('');const params=new URLSearchParams(location.search),targetType=params.get('target_type'),targetId=params.get('target_id');const fields=targetType==='phase'?['sow_fees']:targetType==='phase_person_week'?['budgeted_hours']:['internal_rate','engagement_rate','contract_rate','dte_rate'];const form=targetType?`<section class="card revision-form"><div><span class="eyebrow">Budget lock</span><h2>Record the reasoned change</h2><p>This update and its reason will be retained in the audit trail.</p></div><form id="revision-form">${select('Field','field_name',fields[0],fields)}${field('New value','new_value','', 'number','required step="0.01"')}<label class="field"><span>Reason</span><textarea name="reason" required></textarea></label><button class="btn primary">Apply revision</button></form></section>`:'';shell('Budget revisions',`${engagementTabs(id,e.complexity_mode)}${form}<section class="card"><div class="section-heading"><div><span class="eyebrow">Audit trail</span><h2>Reasoned re-baselines</h2></div></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Scope</th><th>Field</th><th>Old</th><th>New</th><th>Reason</th></tr></thead><tbody>${rows||'<tr><td colspan="6">No revisions recorded</td></tr>'}</tbody></table></div><p class="hint">Revisions originate from a blocked budget edit after activation.</p></section>`);document.getElementById('revision-form')?.addEventListener('submit',async(event)=>{event.preventDefault();const body={...formObject(event.currentTarget),target_type:targetType,target_id:Number(targetId)};try{await api(`/api/engagements/${id}/revisions`,{method:'POST',body});history.replaceState({},'',`/engagements/${id}/revisions`);toast('Budget revision applied');renderRevisions(id);}catch(error){toast(error.message,'error');}});}catch(error){shell('Budget revisions',errorPanel(error));}
 }
 
-function bindAdjustments(id, rows) {
-  document.querySelectorAll('[data-edit-adjustment]').forEach((button) => {
-    button.addEventListener('click', () => {
-      const row = rows.find((item) => item.id === Number(button.dataset.editAdjustment));
-      document.getElementById('adjustment-form-title').textContent = 'Edit Adjustment';
-      document.getElementById('adjustment-id').value = row.id;
-      document.getElementById('adjustment_type').value = row.adjustment_type;
-      document.getElementById('effective_date').value = row.effective_date || '';
-      document.getElementById('amount').value = row.amount || 0;
-      document.getElementById('description').value = row.description || '';
-    });
-  });
-  document.querySelectorAll('[data-delete-adjustment]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      if (!confirm('Delete this adjustment?')) return;
-      await api(`/api/engagements/${id}/adjustments/${button.dataset.deleteAdjustment}`, { method: 'DELETE' });
-      showToast('Adjustment deleted');
-      renderAdjustments(id);
-    });
-  });
-  document.getElementById('save-adjustment').addEventListener('click', async () => {
-    const adjustmentId = document.getElementById('adjustment-id').value;
-    const body = {
-      adjustment_type: document.getElementById('adjustment_type').value,
-      effective_date: document.getElementById('effective_date').value,
-      amount: Number(document.getElementById('amount').value || 0),
-      description: document.getElementById('description').value,
-    };
-    try {
-      if (adjustmentId) await api(`/api/engagements/${id}/adjustments/${adjustmentId}`, { method: 'PUT', body });
-      else await api(`/api/engagements/${id}/adjustments`, { method: 'POST', body });
-      showToast('Adjustment saved');
-      renderAdjustments(id);
-    } catch (error) {
-      showToast(error.message);
-    }
-  });
+async function renderExpenses(id) {
+  try{const data=await api(`/api/engagements/${id}`),e=data.engagement;const rows=data.expenses.map(x=>`<tr><td>${esc(x.incurred_date||'')}</td><td>${esc(x.expense_type.replaceAll('_',' '))}</td><td>${esc(x.phase_name||'Engagement-wide')}</td><td>${esc(x.description||'')}</td><td>${money(x.amount)}</td><td><button class="icon-btn" data-delete-expense="${x.id}">×</button></td></tr>`).join('');shell('Expenses',`${engagementTabs(id,e.complexity_mode)}<div class="split-layout"><section class="card"><h2>Expense ledger</h2><div class="table-wrap"><table><thead><tr><th>Date</th><th>Type</th><th>Phase</th><th>Description</th><th>Amount</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="6">No expenses</td></tr>'}</tbody></table></div><p class="hint">Client-paid expenses do not affect budget or realization calculations.</p></section><section class="card side-form"><h2>Add expense</h2><form id="expense-form">${select('Type','expense_type','crowe_paid',[['crowe_paid','Crowe paid'],['client_paid','Client paid']])}${select('Phase','phase_id','',[['','Engagement-wide'],...data.phases.map(p=>[p.id,p.phase_name])])}${field('Description','description')}${field('Amount','amount','', 'number','step="0.01"')}${field('Incurred date','incurred_date','', 'date')}<button class="btn primary">Save expense</button></form></section></div>`);document.getElementById('expense-form').addEventListener('submit',async(event)=>{event.preventDefault();const body=formObject(event.currentTarget);body.phase_id=body.phase_id?Number(body.phase_id):null;try{await api(`/api/engagements/${id}/expenses`,{method:'POST',body});toast('Expense saved');renderExpenses(id);}catch(error){toast(error.message,'error');}});document.querySelectorAll('[data-delete-expense]').forEach(b=>b.addEventListener('click',async()=>{await api(`/api/engagements/${id}/expenses/${b.dataset.deleteExpense}`,{method:'DELETE'});renderExpenses(id);}));}catch(error){shell('Expenses',errorPanel(error));}
 }
 
 async function renderHistory(id) {
-  const [snapshots, data] = await Promise.all([
-    api(`/api/engagements/${id}/snapshots`),
-    api(`/api/engagements/${id}`),
-  ]);
-  const weeks = data.weekly_summary || [];
-  setPage(
-    'Snapshot History',
-    `
-    ${engagementTabs(id)}
-    <div class="grid two-col">
-      <div class="card stack">
-        <div class="card-title"><h2>Week by Week Hours</h2><strong>${num(data.metrics.hours_to_date)} hrs</strong></div>
-        ${weeklyHoursChart(weeks)}
-      </div>
-      <div class="card stack">
-        <div class="card-title"><h2>Weekly Detail</h2></div>
-        ${weeklyHoursTable(weeks)}
-      </div>
-    </div>
-    <div class="card" style="margin-top:16px">
-      <div class="card-title"><h2>Snapshot Imports</h2></div>
-      ${historyTable(id, snapshots)}
-    </div>
-    `
-  );
-  bindLinks();
-  bindHistory(id, snapshots);
-}
-
-function historyTable(id, snapshots) {
-  if (!snapshots.length) return '<div class="empty">No snapshots yet.</div>';
-  return `
-    <div class="table-wrap"><table>
-      <thead><tr><th></th><th>Week End</th><th>Imported At</th><th>Rows</th><th>Hours</th><th>Fees</th><th>Cumulative Hours</th><th>Cumulative Fees</th><th>Notes</th><th></th></tr></thead>
-      <tbody>
-        ${snapshots
-          .map((row) => `
-          <tr>
-            <td><button class="btn icon secondary" title="Expand" data-expand-snapshot="${row.id}">${svgIcon('chevron')}</button></td>
-            <td>${escapeHtml(row.week_end_date)}</td><td>${escapeHtml(row.imported_at)}</td><td>${row.row_count}</td><td>${num(row.hours)}</td><td>${money(row.fees)}</td><td>${num(row.cumulative_hours)}</td><td>${money(row.cumulative_fees)}</td><td>${escapeHtml(row.notes)}</td>
-            <td><button class="btn icon secondary" title="Delete" data-delete-snapshot="${row.id}">${svgIcon('trash')}</button></td>
-          </tr>
-          <tr id="snapshot-detail-${row.id}" style="display:none"><td colspan="10"><div class="muted">Loading...</div></td></tr>`)
-          .join('')}
-      </tbody>
-    </table></div>
-  `;
-}
-
-function bindHistory(id) {
-  document.querySelectorAll('[data-expand-snapshot]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const snapshotId = button.dataset.expandSnapshot;
-      const row = document.getElementById(`snapshot-detail-${snapshotId}`);
-      const opening = row.style.display === 'none';
-      row.style.display = opening ? 'table-row' : 'none';
-      if (!opening || row.dataset.loaded) return;
-      const snapshot = await api(`/api/engagements/${id}/snapshots/${snapshotId}`);
-      row.querySelector('td').innerHTML = snapshotEntries(snapshot.entries);
-      row.dataset.loaded = '1';
-    });
-  });
-  document.querySelectorAll('[data-delete-snapshot]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      if (!confirm('Delete this snapshot and its time entries?')) return;
-      await api(`/api/engagements/${id}/snapshots/${button.dataset.deleteSnapshot}`, { method: 'DELETE' });
-      showToast('Snapshot deleted');
-      renderHistory(id);
-    });
-  });
-}
-
-function snapshotEntries(entries) {
-  return `
-    <div class="table-wrap"><table>
-      <thead><tr><th>Worker</th><th>Date</th><th>Hours</th><th>Fees</th><th>Memo</th></tr></thead>
-      <tbody>${entries.map((entry) => `<tr><td>${escapeHtml(entry.worker_name)}</td><td>${escapeHtml(entry.entry_date)}</td><td>${num(entry.hours)}</td><td>${money(entry.fees_contract_rate)}</td><td>${escapeHtml(entry.memo)}</td></tr>`).join('')}</tbody>
-    </table></div>
-  `;
+  try{const data=await api(`/api/engagements/${id}`),e=data.engagement;const snapshots=await api(`/api/engagements/${id}/snapshots`);const rows=snapshots.map(x=>`<tr><td>${esc(x.week_end_date)}</td><td>${esc(x.imported_at)}</td><td>${x.row_count}</td><td>${num(x.hours)}</td><td>${money(x.fees)}</td><td>${num(x.cumulative_hours)}</td><td>${money(x.cumulative_fees)}</td><td>${esc(x.notes||'')}</td><td><button class="icon-btn" data-delete-snapshot="${x.id}">×</button></td></tr>`).join('');shell('Snapshot history',`${engagementTabs(id,e.complexity_mode)}<section class="card"><h2>Committed imports</h2><div class="table-wrap"><table><thead><tr><th>Week end</th><th>Imported</th><th>Rows</th><th>Hours</th><th>Fees</th><th>Cumulative hours</th><th>Cumulative fees</th><th>Notes</th><th></th></tr></thead><tbody>${rows||'<tr><td colspan="9">No imports</td></tr>'}</tbody></table></div></section>`);document.querySelectorAll('[data-delete-snapshot]').forEach(b=>b.addEventListener('click',async()=>{if(!confirm('Delete this snapshot and its time entries?'))return;await api(`/api/engagements/${id}/snapshots/${b.dataset.deleteSnapshot}`,{method:'DELETE'});renderHistory(id);}));}catch(error){shell('Snapshot history',errorPanel(error));}
 }
 
 async function renderExport(id) {
-  const data = await api(`/api/engagements/${id}`);
-  setPage(
-    'Export',
-    `
-    ${engagementTabs(id)}
-    <div class="grid two-col">
-      <div class="card stack">
-        <h2 class="section-title">${escapeHtml(data.engagement.client_name)}</h2>
-        <div class="print-note small">HTML opens in a new tab and invokes the browser print dialog.</div>
-        <div class="field"><label>Status Narrative</label><textarea id="narrative"></textarea></div>
-        <div class="row">
-          <button class="btn primary" id="html-export">${svgIcon('file')}HTML / PDF</button>
-          <a class="btn secondary" href="/api/engagements/${id}/export/excel">${svgIcon('file')}Excel</a>
-        </div>
-      </div>
-      <div class="card stack">
-        ${miniMetric('Net Budget', money(data.metrics.net_budget))}
-        ${miniMetric('Projected Final', money(data.metrics.projected_final))}
-        ${miniMetric('Markdown Needed', money(data.metrics.markdown_needed))}
-      </div>
-    </div>
-    `
-  );
-  bindLinks();
-  document.getElementById('html-export').addEventListener('click', () => {
-    const narrative = encodeURIComponent(document.getElementById('narrative').value);
-    window.open(`/api/engagements/${id}/export/html?narrative=${narrative}`, '_blank');
-  });
+  try{const data=await api(`/api/engagements/${id}`),e=data.engagement;shell('Export engagement',`${engagementTabs(id,e.complexity_mode)}<section class="export-hero"><div><span class="eyebrow">Partner-ready reporting</span><h2>Engagement Summary first</h2><p>Both formats lead with the established Engagement Summary structure. Excel also includes weekly detail, adjustments, expenses and revisions.</p></div><div class="export-actions"><a class="btn primary" href="/api/engagements/${id}/export/excel">Download Excel</a><button class="btn secondary" id="print-report">Open print report</button></div></section><section class="card"><label class="field"><span>Status narrative</span><textarea id="narrative" rows="6" placeholder="Optional context for the print-ready report"></textarea></label></section>`);document.getElementById('print-report').addEventListener('click',()=>window.open(`/api/engagements/${id}/export/html?narrative=${encodeURIComponent(document.getElementById('narrative').value)}`,'_blank'));}catch(error){shell('Export engagement',errorPanel(error));}
 }
 
 async function renderSettings() {
-  const data = await api('/api/settings/rates');
-  const rates = data.rates;
-  setPage(
-    'Settings',
-    `
-    <div class="grid two-col">
-      <div class="card stack">
-        <div class="card-title"><h2>Bill Rate Table</h2></div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Role</th><th>Default Rate</th></tr></thead>
-            <tbody>${Object.entries(rates)
-              .map(([role, rate]) => `<tr><td>${escapeHtml(role)}</td><td><input type="number" step="0.01" data-rate-role="${escapeHtml(role)}" value="${rate}"></td></tr>`)
-              .join('')}</tbody>
-          </table>
-        </div>
-        <button class="btn primary" id="save-rates">${svgIcon('save')}Save Rates</button>
-      </div>
-      <div class="card stack">
-        <div class="card-title"><h2>Database</h2></div>
-        <div class="small muted">${escapeHtml(data.database.path)}</div>
-        <div>Last modified: ${escapeHtml(data.database.last_modified || 'Not created')}</div>
-        <a class="btn secondary" href="/api/settings/backup">${svgIcon('file')}Backup</a>
-      </div>
-    </div>
-    `
-  );
-  bindLinks();
-  document.getElementById('save-rates').addEventListener('click', async () => {
-    const next = {};
-    document.querySelectorAll('[data-rate-role]').forEach((field) => {
-      next[field.dataset.rateRole] = Number(field.value || 0);
-    });
-    await api('/api/settings/rates', { method: 'PUT', body: { rates: next } });
-    showToast('Rates saved');
-    renderSettings();
-  });
-}
-
-function showDbError() {
-  app.innerHTML = `
-    <div class="error-page">
-      <div class="card stack">
-        <h1>Database Error</h1>
-        <p>The app could not open or initialize the local SQLite database.</p>
-        <pre>${escapeHtml(window.DB_ERROR)}</pre>
-        <p class="muted">Restore a recent backup or move the damaged database file before launching again.</p>
-      </div>
-    </div>
-  `;
+  try{const data=await api('/api/settings/rates');const rateRows=Object.entries(data.rates).map(([role,rate])=>`<tr><td><input value="${esc(role)}" data-rate-role></td><td><input type="number" value="${rate}" data-rate-value></td><td>${role.startsWith('Offshore')?'<span class="os-badge">OS</span>':'Onshore'}</td></tr>`).join('');shell('Settings',`<section class="settings-grid"><div class="card"><div class="section-heading"><div><span class="eyebrow">Rate card</span><h2>Default internal rates</h2></div></div><div class="table-wrap"><table><thead><tr><th>Role</th><th>Internal/standard</th><th>Pool</th></tr></thead><tbody id="rate-rows">${rateRows}</tbody></table></div></div><div class="stack"><section class="card"><h2>Budget defaults</h2><form id="settings-form">${field('Engagement discount','engagement_discount_rate',data.engagement_discount_rate,'number','step="0.01"')}${field('Contract discount','contract_discount_rate',data.contract_discount_rate,'number','step="0.01"')}${field('Variance threshold hours','variance_threshold_hours',data.variance_threshold_hours,'number','step="0.25"')}${field('Variance threshold percent','variance_threshold_pct',data.variance_threshold_pct,'number','step="0.01"')}<button class="btn primary">Save settings</button></form></section><section class="card"><h2>Database</h2><p class="mono">${esc(data.db_path)}</p><a class="btn secondary" href="/api/settings/backup">Download backup</a></section></div></section>`);document.getElementById('settings-form').addEventListener('submit',async(event)=>{event.preventDefault();const rates={};document.querySelectorAll('#rate-rows tr').forEach(row=>rates[row.querySelector('[data-rate-role]').value]=Number(row.querySelector('[data-rate-value]').value||0));try{await api('/api/settings/rates',{method:'PUT',body:{...formObject(event.currentTarget),rates}});toast('Settings saved');}catch(error){toast(error.message,'error');}});}catch(error){shell('Settings',errorPanel(error));}
 }
 
 function render() {
-  if (window.DB_ERROR) {
-    showDbError();
-    return;
-  }
-  const path = window.location.pathname;
-  if (path === '/') return renderLanding();
-  if (path === '/dashboard') return renderDashboard();
-  if (path === '/engagements/new') return renderNewEngagement();
-  if (path === '/settings') return renderSettings();
-  const match = path.match(/^\/engagements\/(\d+)(?:\/([^/]+))?$/);
-  if (match) return renderEngagement(Number(match[1]), match[2] || '');
-  setPage('Not Found', '<div class="card">Page not found.</div>');
+  if(window.DB_ERROR){shell('Database unavailable',errorPanel(window.DB_ERROR));return;}
+  const path=location.pathname;
+  if(path==='/'||path==='/dashboard')return renderDashboard();
+  if(path==='/engagements/new')return renderNewEngagement();
+  if(path==='/settings')return renderSettings();
+  let match=path.match(/^\/engagements\/(\d+)\/phases\/(\d+)$/);
+  if(match)return renderPhaseDetail(Number(match[1]),Number(match[2]));
+  match=path.match(/^\/engagements\/(\d+)(?:\/([^/]+))?$/);
+  if(match){const id=Number(match[1]),route=match[2]||'';return ({'':renderEngagement,team:renderTeamConfig,import:renderImport,adjustments:renderAdjustments,revisions:renderRevisions,expenses:renderExpenses,history:renderHistory,export:renderExport}[route]||renderEngagement)(id);}
+  shell('Page not found','<div class="empty">The requested page does not exist.</div>');
 }
 
-window.addEventListener('popstate', render);
+window.addEventListener('popstate',render);
 render();
-

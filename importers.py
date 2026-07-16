@@ -8,7 +8,8 @@ from typing import Any
 
 from openpyxl import load_workbook
 
-from calculations import as_float, money
+from calculations import as_float, money, variance_flag, week_monday
+from db import get_app_settings
 
 
 EXPECTED_COLUMNS = [
@@ -40,6 +41,10 @@ HEADER_MARKERS = {"Transaction ID", "Worker", "Hours", "Fees @ Contract Rate"}
 
 def normalize_header(value: Any) -> str:
     return " ".join(str(value or "").strip().split())
+
+
+def normalize_match(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
 
 
 def excel_serial_to_iso(value: Any) -> str:
@@ -147,7 +152,7 @@ def preview_rows(
     conn: sqlite3.Connection, engagement_id: int, parsed_rows: list[dict[str, Any]]
 ) -> dict[str, Any]:
     engagement = conn.execute(
-        "SELECT engagement_code FROM engagements WHERE id = ?", (engagement_id,)
+        "SELECT engagement_code, complexity_mode FROM engagements WHERE id = ?", (engagement_id,)
     ).fetchone()
     if engagement is None:
         raise ValueError("Engagement not found")
@@ -164,6 +169,25 @@ def preview_rows(
             "SELECT transaction_id FROM time_entries WHERE transaction_id IS NOT NULL"
         ).fetchall()
     }
+    phase_rows = conn.execute(
+        "SELECT id, phase_name, phase_code FROM phases WHERE engagement_id=?", (engagement_id,)
+    ).fetchall()
+    exact_phases = {str(row["phase_code"] or "").strip(): int(row["id"]) for row in phase_rows
+                    if str(row["phase_code"] or "").strip()}
+    normalized_phases = {normalize_match(row["phase_code"]): int(row["id"]) for row in phase_rows
+                         if normalize_match(row["phase_code"])}
+    phase_names = {int(row["id"]): row["phase_name"] for row in phase_rows}
+    settings = get_app_settings(conn)
+    weekly_existing = {
+        (row["worker_name"], week_monday(row["week_end_date"])): as_float(row["hours"])
+        for row in conn.execute("""SELECT worker_name, week_end_date, SUM(hours) hours
+        FROM time_entries WHERE engagement_id=? GROUP BY worker_name, week_end_date""", (engagement_id,))
+    }
+
+    batch_weekly: dict[tuple[str, str | None], float] = {}
+    for record in parsed_rows:
+        key = (str(record.get("Worker", "")).strip(), week_monday(excel_serial_to_iso(record.get("Week End Date"))))
+        batch_weekly[key] = batch_weekly.get(key, 0) + as_float(record.get("Hours"))
 
     seen_ids: set[str] = set()
     rows: list[dict[str, Any]] = []
@@ -173,6 +197,11 @@ def preview_rows(
         worker_name = str(record.get("Worker", "")).strip()
         project_id = str(record.get("Project ID", "")).strip()
         hours = as_float(record.get("Hours"))
+        phase_desc = str(record.get("Phase Desc", "")).strip()
+        matched_phase_id = exact_phases.get(phase_desc) or normalized_phases.get(normalize_match(phase_desc))
+        if engagement["complexity_mode"] == "simple" and phase_rows:
+            matched_phase_id = int(phase_rows[0]["id"])
+        flags: list[str] = []
         flag = None
         selectable = True
         included = True
@@ -188,6 +217,22 @@ def preview_rows(
             included = False
         elif project_id and project_id != engagement["engagement_code"]:
             flag = "project_mismatch"
+        if flag:
+            flags.append(flag)
+        if matched_phase_id is None:
+            flags.append("unmatched_phase")
+            if flag is None:
+                flag = "unmatched_phase"
+        monday = week_monday(excel_serial_to_iso(record.get("Week End Date")))
+        prior = None
+        if monday:
+            prior_day = (datetime.fromisoformat(monday).date() - timedelta(days=7)).isoformat()
+            prior = weekly_existing.get((worker_name, prior_day))
+        current_week = batch_weekly.get((worker_name, monday), hours)
+        if variance_flag(current_week, prior, settings):
+            flags.append("variance_flagged")
+            if flag is None:
+                flag = "variance_flagged"
 
         seen_ids.add(transaction_id)
         if flag == "duplicate":
@@ -204,13 +249,17 @@ def preview_rows(
                 "worker_id": str(record.get("Worker ID", "")).strip(),
                 "worker_name": worker_name,
                 "title": str(record.get("Title", "")).strip(),
+                "worker_bu_du_cc": str(record.get("Worker BU DU CC", "")).strip(),
+                "competency_center": str(record.get("Competency Center", "")).strip(),
                 "entry_date": excel_serial_to_iso(record.get("Date")),
                 "week_end_date": excel_serial_to_iso(record.get("Week End Date")),
                 "financial_period": str(record.get("Financial Period", "")).strip(),
                 "project_id": project_id,
                 "project": str(record.get("Project", "")).strip(),
                 "xref": str(record.get("Xref", "")).strip(),
-                "phase_desc": str(record.get("Phase Desc", "")).strip(),
+                "phase_desc": phase_desc,
+                "matched_phase_id": matched_phase_id,
+                "matched_phase_name": phase_names.get(matched_phase_id),
                 "task_desc": str(record.get("Task Desc", "")).strip(),
                 "work_location": str(record.get("Work Loc", "")).strip(),
                 "billing_status": str(record.get("Billing Status", "")).strip(),
@@ -219,6 +268,8 @@ def preview_rows(
                 "fees_contract_rate": money(record.get("Fees @ Contract Rate")),
                 "memo": str(record.get("Memo", "")).strip(),
                 "flag": flag,
+                "flags": flags,
+                "variance_flagged": "variance_flagged" in flags,
                 "included": included,
                 "selectable": selectable,
             }

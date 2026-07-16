@@ -9,8 +9,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-
-DEFAULT_RATES: dict[str, float] = {
+SCHEMA_VERSION = 2
+DEFAULT_RATES = {
+    "Partner FY26": 900,
+    "Managing Director FY26": 750,
+    "Senior Manager FY26": 500,
+    "Manager FY26": 350,
+    "Senior Staff FY26": 300,
+    "Staff FY26": 225,
+    "Intern FY26": 125,
+    "Project Services FY26": 175,
+    "Offshore Senior Manager FY26": 300,
+    "Offshore Manager FY26": 225,
+    "Offshore Staff FY26": 125,
     "Partner": 900,
     "Managing Director": 750,
     "Senior Manager": 500,
@@ -19,6 +30,13 @@ DEFAULT_RATES: dict[str, float] = {
     "Staff": 225,
     "Intern": 125,
     "Project Services": 175,
+}
+DEFAULT_SETTINGS = {
+    "bill_rates": json.dumps(DEFAULT_RATES),
+    "engagement_discount_rate": "0",
+    "contract_discount_rate": "0",
+    "variance_threshold_hours": "6",
+    "variance_threshold_pct": "1.0",
 }
 
 
@@ -30,14 +48,11 @@ def app_dir() -> Path:
 
 def db_path() -> Path:
     override = os.environ.get("BUDGET_TRACKER_DB")
-    if override:
-        return Path(override).resolve()
-    return app_dir() / "budget_tracker.db"
+    return Path(override).resolve() if override else app_dir() / "budget_tracker.db"
 
 
 def seed_path() -> Path:
-    seed_name = os.environ.get("BUDGET_TRACKER_SEED", "demo_seed.db")
-    return app_dir() / seed_name
+    return app_dir() / os.environ.get("BUDGET_TRACKER_SEED", "demo_seed.db")
 
 
 def schema_path() -> Path:
@@ -64,16 +79,42 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone() is not None
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    if not _table_exists(conn, table):
+        return set()
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
 def init_db(path: Path | None = None) -> Path:
     target = path or db_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     with connect(target) as conn:
+        legacy = _table_exists(conn, "engagements") and "complexity_mode" not in _columns(
+            conn, "engagements"
+        )
+    if legacy:
+        backup = target.with_name(f"{target.stem}.pre-v2.bak{target.suffix}")
+        if not backup.exists():
+            shutil.copy2(target, backup)
+        from migrations import migrate_v1_to_v2
+        migrate_v1_to_v2(target, schema_path(), now_iso())
+
+    with connect(target) as conn:
         conn.executescript(schema_path().read_text(encoding="utf-8"))
+        for key, value in DEFAULT_SETTINGS.items():
+            conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (key, value))
         conn.execute(
-            "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
-            ("bill_rates", json.dumps(DEFAULT_RATES)),
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (SCHEMA_VERSION, now_iso()),
         )
     return target
+
 
 def load_seed_database(path: Path | None = None) -> Path:
     target = path or db_path()
@@ -89,37 +130,50 @@ def load_seed_database(path: Path | None = None) -> Path:
     init_db(target)
     return target
 
+
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
-    if row is None:
-        return None
-    return {key: row[key] for key in row.keys()}
+    return {key: row[key] for key in row.keys()} if row is not None else None
 
 
 def rows_to_dicts(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
     return [row_to_dict(row) or {} for row in rows]
 
 
+def get_setting(conn: sqlite3.Connection, key: str, default: Any = None) -> Any:
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: Any) -> None:
+    conn.execute(
+        "INSERT INTO settings(key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, str(value)),
+    )
+
+
 def get_rates(conn: sqlite3.Connection) -> dict[str, float]:
-    row = conn.execute("SELECT value FROM settings WHERE key = 'bill_rates'").fetchone()
-    if not row:
-        return DEFAULT_RATES.copy()
     try:
-        data = json.loads(row["value"])
-    except json.JSONDecodeError:
+        data = json.loads(get_setting(conn, "bill_rates", json.dumps(DEFAULT_RATES)))
+    except (json.JSONDecodeError, TypeError):
         return DEFAULT_RATES.copy()
     return {str(key): float(value or 0) for key, value in data.items()}
 
 
 def set_rates(conn: sqlite3.Connection, rates: dict[str, Any]) -> dict[str, float]:
     clean = {str(key): float(value or 0) for key, value in rates.items()}
-    conn.execute(
-        """
-        INSERT INTO settings(key, value) VALUES ('bill_rates', ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value
-        """,
-        (json.dumps(clean),),
-    )
+    set_setting(conn, "bill_rates", json.dumps(clean))
     return clean
+
+
+def get_app_settings(conn: sqlite3.Connection) -> dict[str, Any]:
+    return {
+        "rates": get_rates(conn),
+        "engagement_discount_rate": float(get_setting(conn, "engagement_discount_rate", 0) or 0),
+        "contract_discount_rate": float(get_setting(conn, "contract_discount_rate", 0) or 0),
+        "variance_threshold_hours": float(get_setting(conn, "variance_threshold_hours", 6) or 6),
+        "variance_threshold_pct": float(get_setting(conn, "variance_threshold_pct", 1.0) or 1.0),
+    }
 
 
 def backup_database(destination: Path) -> Path:
@@ -127,4 +181,3 @@ def backup_database(destination: Path) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(db_path(), destination)
     return destination
-

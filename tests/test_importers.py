@@ -82,8 +82,12 @@ class ImporterTests(unittest.TestCase):
                       engagement_code, client_name, status, created_at, updated_at
                     ) VALUES (?, ?, ?, ?, ?)
                     """,
-                    ("P100", "Client", "Active", now_iso(), now_iso()),
+                    ("P100", "Client", "active", now_iso(), now_iso()),
                 ).lastrowid
+                conn.execute(
+                    "INSERT INTO phases (engagement_id,phase_name,is_default) VALUES (?,'General',1)",
+                    (engagement_id,),
+                )
                 conn.execute(
                     """
                     INSERT INTO team_members (engagement_id, name, role)

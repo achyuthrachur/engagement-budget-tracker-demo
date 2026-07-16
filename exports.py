@@ -2,447 +2,260 @@ from __future__ import annotations
 
 import html
 import io
+import re
 import sqlite3
+from copy import copy
 from datetime import date
 from typing import Any
 
 from openpyxl import Workbook
-from openpyxl.chart import BarChart, PieChart, Reference
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.dimensions import ColumnDimension
 
-from calculations import as_float, engagement_metrics, phase_summary, team_summary
+from calculations import engagement_metrics, phase_summary, team_summary
 from db import row_to_dict, rows_to_dicts
 
-CURRENCY_FORMAT = '$#,##0.00'
-HOURS_FORMAT = '#,##0.00'
-PERCENT_FORMAT = '0%'
-DATE_FORMAT = 'yyyy-mm-dd'
-NAVY = '1B2A4A'
-ACCENT = 'D4A853'
-PAGE_BG = 'F4F5F7'
-GREEN = '22863A'
-AMBER = 'B45309'
-RED = 'B91C1C'
+NAVY = "011E41"
+AMBER = "F5A800"
+LIGHT = "F4F5F7"
+WHITE = "FFFFFF"
+TEXT = "333333"
+BORDER = Side(style="thin", color="D9DDE3")
 
 
 def filename_safe(value: str) -> str:
-    return ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in value).strip('_')
-
-
-def budget_run_date() -> str:
-    return date.today().isoformat()
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_") or "Engagement"
 
 
 def export_filename(engagement: dict[str, Any]) -> str:
-    client = filename_safe(str(engagement.get('client_name') or 'Client'))
-    code = filename_safe(str(engagement.get('engagement_code') or 'Engagement'))
-    return f'{client}_{code}_{budget_run_date()}.xlsx'
+    return f"{filename_safe(engagement['client_name'])}_{filename_safe(engagement['engagement_code'])}_{date.today().isoformat()}.xlsx"
 
 
 def format_currency(value: Any) -> str:
-    return f'${as_float(value):,.2f}'
+    return f"${float(value or 0):,.2f}"
 
 
 def format_hours(value: Any) -> str:
-    return f'{as_float(value):,.2f}'
+    return f"{float(value or 0):,.1f}"
 
 
 def format_percent(value: Any) -> str:
-    return f'{as_float(value) * 100:,.0f}%'
+    return "—" if value is None else f"{float(value):.1%}"
 
 
 def engagement_payload(conn: sqlite3.Connection, engagement_id: int) -> dict[str, Any]:
-    engagement = row_to_dict(
-        conn.execute('SELECT * FROM engagements WHERE id = ?', (engagement_id,)).fetchone()
-    )
-    if engagement is None:
-        raise ValueError('Engagement not found')
-    adjustments = rows_to_dicts(
-        conn.execute(
-            """
-            SELECT * FROM budget_adjustments
-            WHERE engagement_id = ?
-            ORDER BY effective_date DESC, id DESC
-            """,
-            (engagement_id,),
-        ).fetchall()
-    )
-    entries = rows_to_dicts(
-        conn.execute(
-            """
-            SELECT * FROM time_entries
-            WHERE engagement_id = ?
-            ORDER BY week_end_date DESC, entry_date DESC, id DESC
-            """,
-            (engagement_id,),
-        ).fetchall()
-    )
+    engagement = row_to_dict(conn.execute("SELECT * FROM engagements WHERE id=?", (engagement_id,)).fetchone())
+    if not engagement:
+        raise ValueError("Engagement not found")
     return {
-        'engagement': engagement,
-        'metrics': engagement_metrics(conn, engagement_id),
-        'team': team_summary(conn, engagement_id),
-        'phases': phase_summary(conn, engagement_id),
-        'adjustments': adjustments,
-        'entries': entries,
+        "engagement": engagement,
+        "metrics": engagement_metrics(conn, engagement_id),
+        "team": team_summary(conn, engagement_id),
+        "phases": phase_summary(conn, engagement_id),
+        "adjustments": rows_to_dicts(conn.execute("""SELECT a.*,p.phase_name FROM budget_adjustments a
+            LEFT JOIN phases p ON p.id=a.phase_id WHERE a.engagement_id=? ORDER BY a.effective_date,a.id""", (engagement_id,)).fetchall()),
+        "entries": rows_to_dicts(conn.execute("SELECT * FROM time_entries WHERE engagement_id=? ORDER BY week_end_date,worker_name,id", (engagement_id,)).fetchall()),
+        "expenses": rows_to_dicts(conn.execute("SELECT * FROM expenses WHERE engagement_id=? ORDER BY incurred_date,id", (engagement_id,)).fetchall()),
+        "revisions": rows_to_dicts(conn.execute("SELECT * FROM budget_revisions WHERE engagement_id=? ORDER BY revised_at,id", (engagement_id,)).fetchall()),
     }
 
 
 def build_excel(conn: sqlite3.Connection, engagement_id: int) -> tuple[str, bytes]:
     payload = engagement_payload(conn, engagement_id)
-    engagement = payload['engagement']
-    metrics = payload['metrics']
-    workbook = Workbook()
-    summary = workbook.active
-    summary.title = 'Engagement Summary'
-    header_fill = PatternFill('solid', fgColor=NAVY)
-    header_font = Font(color='FFFFFF', bold=True)
-    subheader_fill = PatternFill('solid', fgColor=PAGE_BG)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Engagement Summary"
+    _build_summary_sheet(ws, payload)
+    _build_detail_sheet(wb, payload)
+    _build_log_sheet(wb, "Adjustment Log", payload["adjustments"],
+                     ["effective_date", "adjustment_type", "phase_name", "amount", "description"])
+    _build_log_sheet(wb, "Expenses", payload["expenses"],
+                     ["incurred_date", "expense_type", "phase_id", "amount", "description"])
+    _build_log_sheet(wb, "Budget Revisions", payload["revisions"],
+                     ["revised_at", "field_name", "old_value", "new_value", "reason"])
+    stream = io.BytesIO()
+    wb.save(stream)
+    return export_filename(payload["engagement"]), stream.getvalue()
 
-    def write_header(sheet, row: int, values: list[str]) -> None:
-        for col, value in enumerate(values, 1):
-            cell = sheet.cell(row=row, column=col, value=value)
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = Alignment(horizontal='left')
 
-    def style_subheader(sheet, row: int, cols: int) -> None:
-        for col in range(1, cols + 1):
-            cell = sheet.cell(row=row, column=col)
-            cell.fill = subheader_fill
-            cell.font = Font(bold=True, color=NAVY)
-
-    summary.append(['Client', engagement['client_name']])
-    summary.append(['Engagement Code', engagement['engagement_code']])
-    summary.append(['Lead', engagement.get('engagement_lead')])
-    summary.append(['Model Type', engagement.get('model_type')])
-    summary.append(['Budget Run Date', budget_run_date()])
-    summary.append([])
-    write_header(summary, 7, ['Metric', 'Value'])
-    metric_rows = [
-        ('Total Budgeted Hours', metrics.get('total_budgeted_hours'), HOURS_FORMAT),
-        ('Hours To Date', metrics.get('hours_to_date'), HOURS_FORMAT),
-        ('Hours Remaining', metrics.get('hours_remaining'), HOURS_FORMAT),
-        ('Total Budgeted Fees', metrics.get('total_budgeted_fees'), CURRENCY_FORMAT),
-        ('Fees To Date', metrics.get('fees_to_date_contract'), CURRENCY_FORMAT),
-        ('Net Budget', metrics.get('net_budget'), CURRENCY_FORMAT),
-        ('Budget Remaining', metrics.get('budget_remaining'), CURRENCY_FORMAT),
-        ('Projected Final', metrics.get('projected_final'), CURRENCY_FORMAT),
-        ('Markdown Needed', metrics.get('markdown_needed'), CURRENCY_FORMAT),
-        ('Utilization %', metrics.get('utilization_pct'), PERCENT_FORMAT),
-        ('Status', metrics.get('status'), None),
+def _build_summary_sheet(ws, payload):
+    e, m, team, phases = payload["engagement"], payload["metrics"], payload["team"], payload["phases"]
+    ws.sheet_view.showGridLines = False
+    ws.merge_cells("F2:I2")
+    ws["F2"] = "Engagement Summary"
+    ws["F2"].font = Font(name="Arial", size=18, bold=True, color=WHITE)
+    ws["F2"].fill = PatternFill("solid", fgColor=NAVY)
+    ws["F2"].alignment = Alignment(horizontal="center")
+    ws.merge_cells("K2:M2")
+    ws["K2"] = "Budget position"
+    ws["K2"].font = Font(name="Arial", bold=True, color=WHITE)
+    ws["K2"].fill = PatternFill("solid", fgColor=NAVY)
+    labels = [("B3", "Engagement Name"), ("B4", "Engagement Number"), ("B5", "Engagement Lead")]
+    values = [("C3", e["client_name"]), ("C4", e["engagement_code"]), ("C5", e.get("engagement_lead") or "")]
+    for cell, value in labels:
+        ws[cell] = value
+        ws[cell].font = Font(name="Arial", bold=True, color=TEXT)
+    for cell, value in values:
+        ws[cell] = value
+    headers = ["Hours", "Internal/ Standard Fees", "Engagement Fees", "Realization Rate"]
+    for index, value in enumerate(headers, 6):
+        ws.cell(3, index, value)
+    rows = [
+        ("Total Budget", m["total_budgeted_hours"], sum(p["budgeted_std_fees"] for p in phases), m["total_budgeted_fees"],
+         (m["signed_sow"]/sum(p["budgeted_std_fees"] for p in phases)) if sum(p["budgeted_std_fees"] for p in phases) else None),
+        ("Actuals/Current Plan", sum(p["current_plan_hours"] for p in phases), m["fees_to_date_std"],
+         sum(p["current_plan_eng_fees"] for p in phases), m["realization"]),
     ]
-    for label, value, number_format in metric_rows:
-        summary.append([label, value])
-        if number_format:
-            summary.cell(row=summary.max_row, column=2).number_format = number_format
-
-    summary.append([])
-    chart_start = summary.max_row + 1
-    write_header(summary, chart_start, ['Budget Visual', 'Amount'])
-    visual_rows = [
-        ('Net Budget', metrics.get('net_budget')),
-        ('Fees To Date', metrics.get('fees_to_date_contract')),
-        ('Projected Final', metrics.get('projected_final')),
-        ('Markdown Needed', metrics.get('markdown_needed')),
-    ]
-    for label, value in visual_rows:
-        summary.append([label, value])
-        summary.cell(row=summary.max_row, column=2).number_format = CURRENCY_FORMAT
-
-    bar = BarChart()
-    bar.title = 'Budget vs Actuals'
-    bar.y_axis.title = 'Amount'
-    bar.x_axis.title = 'Metric'
-    bar.add_data(Reference(summary, min_col=2, min_row=chart_start, max_row=chart_start + len(visual_rows)), titles_from_data=True)
-    bar.set_categories(Reference(summary, min_col=1, min_row=chart_start + 1, max_row=chart_start + len(visual_rows)))
-    bar.height = 7
-    bar.width = 13
-    summary.add_chart(bar, 'D7')
-
-    summary.append([])
-    team_header = summary.max_row + 1
-    write_header(
-        summary,
-        team_header,
-        [
-            'Name',
-            'Role',
-            'Budgeted Hours',
-            'Hours To Date',
-            'Remaining',
-            'Engagement Rate',
-            'Budgeted Fees',
-            'Fees To Date',
-        ],
-    )
-    for member in payload['team']:
-        budgeted_fees = as_float(member.get('budgeted_hours')) * as_float(member.get('engagement_rate'))
-        summary.append(
-            [
-                member.get('name'),
-                member.get('role'),
-                member.get('budgeted_hours'),
-                member.get('hours_to_date'),
-                member.get('hours_remaining'),
-                member.get('engagement_rate'),
-                budgeted_fees,
-                member.get('fees_to_date'),
-            ]
-        )
-        row = summary.max_row
-        for col in (3, 4, 5):
-            summary.cell(row=row, column=col).number_format = HOURS_FORMAT
-        for col in (6, 7, 8):
-            summary.cell(row=row, column=col).number_format = CURRENCY_FORMAT
-
-    if payload['team']:
-        pie = PieChart()
-        pie.title = 'Budgeted Fees by Team Member'
-        pie.add_data(
-            Reference(summary, min_col=7, min_row=team_header, max_row=team_header + len(payload['team'])),
-            titles_from_data=True,
-        )
-        pie.set_categories(
-            Reference(summary, min_col=1, min_row=team_header + 1, max_row=team_header + len(payload['team']))
-        )
-        pie.height = 7
-        pie.width = 9
-        summary.add_chart(pie, 'D22')
-
-    weekly = workbook.create_sheet('Weekly Detail')
-    write_header(
-        weekly,
-        1,
-        [
-            'Transaction ID',
-            'Worker ID',
-            'Worker',
-            'Title',
-            'Date',
-            'Week End Date',
-            'Financial Period',
-            'Phase Desc',
-            'Task Desc',
-            'Work Loc',
-            'Billing Status',
-            'Hours',
-            'Fees @ Std Rate',
-            'Fees @ Contract Rate',
-            'Memo',
-        ],
-    )
-    for entry in payload['entries']:
-        weekly.append(
-            [
-                entry.get('transaction_id'),
-                entry.get('worker_id'),
-                entry.get('worker_name'),
-                entry.get('title'),
-                entry.get('entry_date'),
-                entry.get('week_end_date'),
-                entry.get('financial_period'),
-                entry.get('phase_desc'),
-                entry.get('task_desc'),
-                entry.get('work_location'),
-                entry.get('billing_status'),
-                entry.get('hours'),
-                entry.get('fees_std_rate'),
-                entry.get('fees_contract_rate'),
-                entry.get('memo'),
-            ]
-        )
-        row = weekly.max_row
-        weekly.cell(row=row, column=12).number_format = HOURS_FORMAT
-        weekly.cell(row=row, column=13).number_format = CURRENCY_FORMAT
-        weekly.cell(row=row, column=14).number_format = CURRENCY_FORMAT
-
-    adjustments = workbook.create_sheet('Adjustment Log')
-    write_header(adjustments, 1, ['Date', 'Type', 'Amount', 'Description'])
-    for adjustment in payload['adjustments']:
-        adjustments.append(
-            [
-                adjustment.get('effective_date'),
-                adjustment.get('adjustment_type'),
-                adjustment.get('amount'),
-                adjustment.get('description'),
-            ]
-        )
-        adjustments.cell(row=adjustments.max_row, column=3).number_format = CURRENCY_FORMAT
-
-    for sheet in workbook.worksheets:
-        sheet.freeze_panes = 'A2'
-        for row in sheet.iter_rows():
-            for cell in row:
-                cell.alignment = Alignment(vertical='top')
-        for column_cells in sheet.columns:
-            max_len = max(len(str(cell.value or '')) for cell in column_cells)
-            sheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_len + 2, 12), 48)
-    style_subheader(summary, 1, 2)
-
-    output = io.BytesIO()
-    workbook.save(output)
-    return export_filename(engagement), output.getvalue()
+    for row_num, values_row in enumerate(rows, 4):
+        for col, value in enumerate(values_row, 5):
+            ws.cell(row_num, col, value)
+    ws["E6"] = "Variance From Plan"
+    ws["F6"] = rows[1][1]-rows[0][1]
+    ws["G6"] = (rows[1][2]-rows[0][2])/rows[0][2] if rows[0][2] else None
+    ws["H6"] = (rows[1][3]-rows[0][3])/rows[0][3] if rows[0][3] else None
+    ws.merge_cells("F7:G7")
+    ws["F7"] = "Potential Change Order Amount →"
+    ws["H7"] = max(0, rows[1][3]-rows[0][3])
+    ws["K3"], ws["L3"], ws["M3"] = "SOW Fees", "Current/Actual Engagement Fees", "Variance"
+    ws["K4"], ws["L4"], ws["M4"] = m["signed_sow"], rows[1][3], m["signed_sow"]-rows[1][3]
+    _summary_tables(ws, team, phases)
+    _style_summary(ws)
 
 
-def build_html_report(conn: sqlite3.Connection, engagement_id: int, narrative: str = '') -> str:
-    payload = engagement_payload(conn, engagement_id)
-    engagement = payload['engagement']
-    metrics = payload['metrics']
+def _summary_tables(ws, team, phases):
+    ws.merge_cells("B10:G10")
+    ws["B10"] = "Engagement Team Summary"
+    ws.merge_cells("I10:O10")
+    ws["I10"] = "Effort Summary"
+    team_headers = ["Name", "Project Role", "Hours (Budget)", "Hours (Actual/Current)",
+                    "Engagement Fees (Budget)", "Engagement Fees (Current Plan)"]
+    phase_headers = ["Phase or Segment", "Budgeted Hours", "Actual/Current Plan Hours",
+                     "Hours Variance", "Engagement Budget", "Engagement Fees Planned", "Over/Under Budget"]
+    for col, value in enumerate(team_headers, 2):
+        ws.cell(11, col, value)
+    for col, value in enumerate(phase_headers, 9):
+        ws.cell(11, col, value)
+    for row_num, member in enumerate(team, 12):
+        values = [member["name"], member.get("role") or "", member["budgeted_hours"],
+                  member["hours_to_date"], member["budgeted_eng_fees"], member["actual_eng_fees"]]
+        for col, value in enumerate(values, 2):
+            ws.cell(row_num, col, value)
+    for row_num, phase in enumerate(phases, 12):
+        values = [phase["phase_name"], phase["budgeted_hours"], phase["current_plan_hours"],
+                  phase["current_plan_hours"]-phase["budgeted_hours"], phase["effective_sow"],
+                  phase["current_plan_eng_fees"], phase["current_plan_eng_fees"]-phase["effective_sow"]]
+        for col, value in enumerate(values, 9):
+            ws.cell(row_num, col, value)
+    total_row = 12 + max(len(team), len(phases))
+    ws.cell(total_row, 2, "Total")
+    ws.cell(total_row, 9, "Total")
+    for col in range(4, 8):
+        ws.cell(total_row, col, f"=SUM({get_column_letter(col)}12:{get_column_letter(col)}{total_row-1})")
+    for col in range(10, 16):
+        ws.cell(total_row, col, f"=SUM({get_column_letter(col)}12:{get_column_letter(col)}{total_row-1})")
+    for cell in ws[total_row]:
+        cell.font = Font(name="Arial", bold=True)
 
-    def esc(value: Any) -> str:
-        return html.escape('' if value is None else str(value))
 
-    def table(headers: list[str], rows: list[list[Any]]) -> str:
-        head = ''.join(f'<th>{esc(header)}</th>' for header in headers)
-        body = ''.join(
-            '<tr>' + ''.join(f'<td>{esc(value)}</td>' for value in row) + '</tr>' for row in rows
-        )
-        return f'<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>'
+def _style_summary(ws):
+    widths = {"B": 24, "C": 23, "D": 15, "E": 20, "F": 22, "G": 22,
+              "H": 18, "I": 30, "J": 16, "K": 22, "L": 18, "M": 20, "N": 24, "O": 20}
+    for column, width in widths.items():
+        ws.column_dimensions[column].width = width
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=2, max_col=15):
+        for cell in row:
+            font = copy(cell.font)
+            font.name = "Arial"
+            cell.font = font
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+    for row_num in (3, 11):
+        for cell in ws[row_num][1:15]:
+            if cell.value is not None:
+                cell.fill = PatternFill("solid", fgColor=LIGHT)
+                cell.font = Font(name="Arial", bold=True, color=TEXT)
+                cell.border = Border(bottom=BORDER)
+    for cell in (ws["B10"], ws["I10"]):
+        cell.fill = PatternFill("solid", fgColor=NAVY)
+        cell.font = Font(name="Arial", bold=True, color=WHITE)
+    for row in ws.iter_rows(min_row=12, max_row=ws.max_row, min_col=4, max_col=15):
+        for cell in row:
+            if isinstance(cell.value, (int, float)) or (isinstance(cell.value, str) and cell.value.startswith("=")):
+                cell.number_format = '$#,##0.00;[Red]-$#,##0.00' if cell.column in {6,7,13,14,15} else '#,##0.0'
+    for cell in ("G4", "H4", "G5", "H5", "H7", "K4", "L4", "M4"):
+        ws[cell].number_format = '$#,##0.00;[Red]-$#,##0.00'
+    for cell in ("I4", "I5", "G6", "H6"):
+        ws[cell].number_format = '0.0%'
+    ws.freeze_panes = "B11"
+    ws.print_area = f"B2:O{ws.max_row}"
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
 
-    def bar(label: str, value: Any, max_value: Any, css_class: str = '') -> str:
-        maximum = max(as_float(max_value), 1)
-        pct = min(max(as_float(value) / maximum, 0), 1) * 100
-        return (
-            f'<div class="bar-row"><div class="bar-label">{esc(label)}</div>'
-            f'<div class="bar-track"><span class="{css_class}" style="width:{pct:.1f}%"></span></div>'
-            f'<div class="bar-value">{format_currency(value)}</div></div>'
-        )
 
-    max_budget_value = max(
-        as_float(metrics.get('net_budget')),
-        as_float(metrics.get('projected_final')),
-        as_float(metrics.get('fees_to_date_contract')),
-        1,
-    )
-    budget_visual = ''.join(
-        [
-            bar('Net Budget', metrics.get('net_budget'), max_budget_value, 'navy'),
-            bar('Fees To Date', metrics.get('fees_to_date_contract'), max_budget_value, 'green'),
-            bar('Projected Final', metrics.get('projected_final'), max_budget_value, 'amber'),
-            bar('Markdown Needed', metrics.get('markdown_needed'), max_budget_value, 'red'),
-        ]
-    )
+def _build_detail_sheet(wb, payload):
+    ws = wb.create_sheet("Weekly Detail")
+    headers = ["transaction_id", "worker_id", "worker_name", "title", "worker_bu_du_cc",
+               "competency_center", "entry_date", "week_end_date", "financial_period",
+               "project_id", "project_name", "xref", "phase_desc", "task_desc",
+               "work_location", "billing_status", "hours", "fees_std_rate",
+               "fees_contract_rate", "memo", "matched_phase_id"]
+    ws.append([header.replace("_", " ").title() for header in headers])
+    for entry in payload["entries"]:
+        ws.append([entry.get(header) for header in headers])
+    _style_tabular(ws)
+    for row in range(2, ws.max_row+1):
+        ws.cell(row, 17).number_format = '#,##0.00'
+        ws.cell(row, 18).number_format = '$#,##0.00'
+        ws.cell(row, 19).number_format = '$#,##0.00'
 
-    team_max = max(
-        [as_float(member.get('budgeted_hours')) * as_float(member.get('engagement_rate')) for member in payload['team']] + [1]
-    )
-    team_visual = ''.join(
-        bar(
-            member.get('name'),
-            as_float(member.get('budgeted_hours')) * as_float(member.get('engagement_rate')),
-            team_max,
-            'navy',
-        )
-        for member in payload['team']
-    ) or '<div class="muted">No team budget configured.</div>'
 
-    summary_table = table(
-        ['Metric', 'Value'],
-        [
-            ['Total Budgeted Hours', format_hours(metrics['total_budgeted_hours'])],
-            ['Hours To Date', format_hours(metrics['hours_to_date'])],
-            ['Hours Remaining', format_hours(metrics['hours_remaining'])],
-            ['Total Budgeted Fees', format_currency(metrics.get('total_budgeted_fees'))],
-            ['Fees To Date', format_currency(metrics['fees_to_date_contract'])],
-            ['Net Budget', format_currency(metrics['net_budget'])],
-            ['Budget Remaining', format_currency(metrics['budget_remaining'])],
-            ['Projected Final', format_currency(metrics['projected_final'])],
-            ['Markdown Needed', format_currency(metrics['markdown_needed'])],
-            ['Utilization %', format_percent(metrics['utilization_pct'])],
-            ['Status', metrics['status']],
-        ],
-    )
-    team_table = table(
-        ['Name', 'Role', 'Budgeted Hours', 'Hours To Date', 'Remaining', 'Engagement Rate', 'Fees'],
-        [
-            [
-                member.get('name'),
-                member.get('role'),
-                format_hours(member.get('budgeted_hours')),
-                format_hours(member.get('hours_to_date')),
-                format_hours(member.get('hours_remaining')),
-                format_currency(member.get('engagement_rate')),
-                format_currency(member.get('fees_to_date')),
-            ]
-            for member in payload['team']
-        ],
-    )
-    phase_table = table(
-        ['Phase', 'Budgeted Hours', 'Hours To Date', 'Fees To Date'],
-        [
-            [
-                phase.get('phase_name'),
-                format_hours(phase.get('budgeted_hours')),
-                format_hours(phase.get('hours_to_date')),
-                format_currency(phase.get('fees_to_date')),
-            ]
-            for phase in payload['phases']
-        ],
-    )
-    adjustment_table = table(
-        ['Date', 'Type', 'Amount', 'Description'],
-        [
-            [
-                adjustment.get('effective_date'),
-                adjustment.get('adjustment_type'),
-                format_currency(adjustment.get('amount')),
-                adjustment.get('description'),
-            ]
-            for adjustment in payload['adjustments']
-        ],
-    )
+def _build_log_sheet(wb, title, rows, fields):
+    ws = wb.create_sheet(title)
+    ws.append([field.replace("_", " ").title() for field in fields])
+    for item in rows:
+        ws.append([item.get(field) for field in fields])
+    _style_tabular(ws)
 
-    return f'''<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>{esc(engagement['client_name'])} Budget Report</title>
-  <style>
-    body {{ font-family: Inter, Arial, sans-serif; color: #1B2A4A; margin: 32px; }}
-    h1 {{ margin: 0 0 6px; font-size: 26px; }}
-    h2 {{ margin-top: 32px; font-size: 18px; page-break-before: always; }}
-    h2:first-of-type {{ page-break-before: auto; }}
-    .meta {{ color: #4b5563; margin-bottom: 24px; }}
-    .metric-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 18px 0 22px; }}
-    .metric {{ border: 1px solid rgba(0,0,0,0.1); border-radius: 8px; padding: 12px; }}
-    .metric-label {{ color: #697386; font-size: 11px; }}
-    .metric-value {{ font-size: 19px; font-weight: 700; margin-top: 4px; }}
-    table {{ border-collapse: collapse; width: 100%; margin-top: 12px; }}
-    th {{ background: #F4F5F7; text-align: left; }}
-    th, td {{ border-bottom: 1px solid rgba(0,0,0,0.12); padding: 8px 10px; font-size: 12px; }}
-    .visual {{ border: 1px solid rgba(0,0,0,0.1); border-radius: 8px; padding: 14px; margin-top: 12px; }}
-    .bar-row {{ display: grid; grid-template-columns: 150px 1fr 110px; gap: 10px; align-items: center; margin: 9px 0; font-size: 12px; }}
-    .bar-track {{ height: 12px; background: #E6E8EC; border-radius: 999px; overflow: hidden; }}
-    .bar-track span {{ display: block; height: 100%; background: #1B2A4A; }}
-    .bar-track span.green {{ background: #22863A; }}
-    .bar-track span.amber {{ background: #B45309; }}
-    .bar-track span.red {{ background: #B91C1C; }}
-    .bar-value {{ text-align: right; font-variant-numeric: tabular-nums; }}
-    .muted {{ color: #697386; }}
-    .narrative {{ white-space: pre-wrap; line-height: 1.5; }}
-    @media print {{ body {{ margin: 0.45in; }} section {{ page-break-inside: avoid; }} .metric-grid {{ break-inside: avoid; }} }}
-  </style>
-</head>
-<body>
-  <header>
-    <h1>{esc(engagement['client_name'])} Budget Report</h1>
-    <div class="meta">
-      Code: {esc(engagement['engagement_code'])} | Lead: {esc(engagement.get('engagement_lead'))}
-      | Model: {esc(engagement.get('model_type'))} | Budget Run Date: {budget_run_date()}
-    </div>
-    <div class="metric-grid">
-      <div class="metric"><div class="metric-label">Net Budget</div><div class="metric-value">{format_currency(metrics['net_budget'])}</div></div>
-      <div class="metric"><div class="metric-label">Fees To Date</div><div class="metric-value">{format_currency(metrics['fees_to_date_contract'])}</div></div>
-      <div class="metric"><div class="metric-label">Projected Final</div><div class="metric-value">{format_currency(metrics['projected_final'])}</div></div>
-      <div class="metric"><div class="metric-label">Markdown Needed</div><div class="metric-value">{format_currency(metrics['markdown_needed'])}</div></div>
-    </div>
-  </header>
-  <section><h2>Budget vs. Actuals</h2>{summary_table}<div class="visual">{budget_visual}</div></section>
-  <section><h2>Team Budget Visualization</h2><div class="visual">{team_visual}</div></section>
-  <section><h2>Team Summary</h2>{team_table}</section>
-  <section><h2>Phase Summary</h2>{phase_table}</section>
-  <section><h2>Adjustment Log</h2>{adjustment_table}</section>
-  <section><h2>Status Narrative</h2><div class="narrative">{esc(narrative)}</div></section>
-  <script>window.addEventListener('load', () => setTimeout(() => window.print(), 250));</script>
-</body>
-</html>'''
+
+def _style_tabular(ws):
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    for cell in ws[1]:
+        cell.fill = PatternFill("solid", fgColor=NAVY)
+        cell.font = Font(name="Arial", bold=True, color=WHITE)
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
+    for column in range(1, ws.max_column+1):
+        letter = get_column_letter(column)
+        width = max((len(str(ws.cell(row, column).value or "")) for row in range(1, min(ws.max_row, 200)+1)), default=10)
+        ws.column_dimensions[letter].width = min(max(width+2, 12), 32)
+
+
+def build_html_report(conn: sqlite3.Connection, engagement_id: int, narrative: str = "") -> str:
+    p = engagement_payload(conn, engagement_id)
+    e, m = p["engagement"], p["metrics"]
+    team_rows = "".join(f"<tr><td>{html.escape(str(x['name']))}</td><td>{html.escape(str(x.get('role') or ''))}</td>"
+        f"<td>{format_hours(x['budgeted_hours'])}</td><td>{format_hours(x['hours_to_date'])}</td>"
+        f"<td>{format_currency(x['budgeted_eng_fees'])}</td><td>{format_currency(x['actual_eng_fees'])}</td></tr>" for x in p["team"])
+    phase_rows = "".join(f"<tr><td>{html.escape(str(x['phase_name']))}</td><td>{format_hours(x['budgeted_hours'])}</td>"
+        f"<td>{format_hours(x['current_plan_hours'])}</td><td>{format_hours(x['current_plan_hours']-x['budgeted_hours'])}</td>"
+        f"<td>{format_currency(x['effective_sow'])}</td><td>{format_currency(x['current_plan_eng_fees'])}</td>"
+        f"<td>{format_currency(x['current_plan_eng_fees']-x['effective_sow'])}</td></tr>" for x in p["phases"])
+    return f"""<!doctype html><html><head><meta charset='utf-8'><title>Engagement Summary</title>
+    <style>{_report_css()}</style></head><body><main>
+    <header><div><div class='eyebrow'>Engagement Summary</div><h1>{html.escape(e['client_name'])}</h1>
+    <p>{html.escape(e['engagement_code'])} · {html.escape(str(e.get('engagement_lead') or ''))}</p></div>
+    <div class='status'>{html.escape(m['status'])}</div></header>
+    <section class='summary'><table><thead><tr><th></th><th>Hours</th><th>Internal/Standard Fees</th><th>Engagement Fees</th><th>Realization</th></tr></thead>
+    <tbody><tr><th>Total Budget</th><td>{format_hours(m['total_budgeted_hours'])}</td><td>{format_currency(sum(x['budgeted_std_fees'] for x in p['phases']))}</td><td>{format_currency(m['total_budgeted_fees'])}</td><td>—</td></tr>
+    <tr><th>Actuals/Current Plan</th><td>{format_hours(sum(x['current_plan_hours'] for x in p['phases']))}</td><td>{format_currency(m['fees_to_date_std'])}</td><td>{format_currency(sum(x['current_plan_eng_fees'] for x in p['phases']))}</td><td>{format_percent(m['realization'])}</td></tr></tbody></table>
+    <aside><span>Signed SOW</span><strong>{format_currency(m['signed_sow'])}</strong><span>Effective budget</span><strong>{format_currency(m['effective_sow'])}</strong></aside></section>
+    <section class='tables'><div><h2>Engagement Team Summary</h2><table><thead><tr><th>Name</th><th>Project Role</th><th>Hours Budget</th><th>Hours Actual</th><th>Fees Budget</th><th>Fees Current</th></tr></thead><tbody>{team_rows}</tbody></table></div>
+    <div><h2>Effort Summary</h2><table><thead><tr><th>Phase</th><th>Budget Hours</th><th>Actual Hours</th><th>Variance</th><th>Budget</th><th>Fees Planned</th><th>Over/Under</th></tr></thead><tbody>{phase_rows}</tbody></table></div></section>
+    {f"<section class='narrative'><h2>Status narrative</h2><p>{html.escape(narrative)}</p></section>" if narrative else ''}
+    <footer>Generated {date.today().isoformat()} · Engagement Budget Tracker</footer>
+    </main></body></html>"""
+
+
+def _report_css():
+    return """@page{size:landscape;margin:12mm}*{box-sizing:border-box}body{margin:0;background:#fff;color:#333;font:12px Arial,sans-serif}main{max-width:1400px;margin:auto}header{display:flex;justify-content:space-between;align-items:end;padding:24px 28px;background:#011E41;color:#fff;border-top:7px solid #F5A800}.eyebrow{text-transform:uppercase;letter-spacing:.14em;color:#F5A800;font-weight:700}h1{margin:6px 0 2px;font-size:28px}header p{margin:0;color:#d7e1ee}.status{border:1px solid #F5A800;padding:8px 12px;font-weight:700}.summary{display:grid;grid-template-columns:1fr 240px;gap:20px;margin:24px 0}.summary aside{background:#f4f5f7;padding:18px;display:grid;gap:7px}.summary aside strong{font-size:18px;color:#011E41;margin-bottom:8px}.tables{display:grid;grid-template-columns:1fr 1.15fr;gap:18px}h2{font-size:15px;color:#011E41;border-bottom:3px solid #F5A800;padding-bottom:6px}table{width:100%;border-collapse:collapse}th,td{padding:7px 8px;border-bottom:1px solid #d9dde3;text-align:right}th:first-child,td:first-child{text-align:left}thead th{background:#011E41;color:#fff;font-size:10px}.narrative{break-before:page;margin-top:24px}footer{margin-top:28px;border-top:1px solid #d9dde3;padding-top:8px;color:#666}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}"""
