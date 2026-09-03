@@ -1,7 +1,9 @@
 build/
 dist/
 release/
+frontend_dist/
 __pycache__/
+node_modules/
 *.pyc
 *.pyo
 *.pyd
@@ -10,6 +12,7 @@ __pycache__/
 !demo_seed.db
 *.bak.db
 /budget_tracker.exe
+/B2A_Budget_Tracker.exe
 .codex-*
 .env
 .vercel/

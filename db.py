@@ -9,19 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 10
 DEFAULT_RATES = {
-    "Partner FY26": 900,
-    "Managing Director FY26": 750,
-    "Senior Manager FY26": 500,
-    "Manager FY26": 350,
-    "Senior Staff FY26": 300,
-    "Staff FY26": 225,
-    "Intern FY26": 125,
-    "Project Services FY26": 175,
-    "Offshore Senior Manager FY26": 300,
-    "Offshore Manager FY26": 225,
-    "Offshore Staff FY26": 125,
     "Partner": 900,
     "Managing Director": 750,
     "Senior Manager": 500,
@@ -30,6 +19,9 @@ DEFAULT_RATES = {
     "Staff": 225,
     "Intern": 125,
     "Project Services": 175,
+    "Offshore Senior Manager": 300,
+    "Offshore Manager": 225,
+    "Offshore Staff": 125,
 }
 DEFAULT_SETTINGS = {
     "bill_rates": json.dumps(DEFAULT_RATES),
@@ -37,6 +29,7 @@ DEFAULT_SETTINGS = {
     "contract_discount_rate": "0",
     "variance_threshold_hours": "6",
     "variance_threshold_pct": "1.0",
+    "confidence_threshold_pct": "0.85",
 }
 
 
@@ -51,8 +44,7 @@ def data_dir() -> Path:
     if override:
         return Path(override).resolve()
     if getattr(sys, "frozen", False):
-        base = Path(os.environ.get("LOCALAPPDATA") or app_dir())
-        return base / "Crowe" / "B2A Budget Tracker"
+        return app_dir()
     return app_dir()
 
 
@@ -62,13 +54,27 @@ def db_path() -> Path:
 
 
 def seed_path() -> Path:
-    return app_dir() / os.environ.get("BUDGET_TRACKER_SEED", "demo_seed.db")
+    configured = os.environ.get("BUDGET_TRACKER_SEED", "demo_seed.db")
+    candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(getattr(sys, "_MEIPASS", app_dir())) / configured)  # type: ignore[attr-defined]
+    candidates.append(app_dir() / configured)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
 
 
 def schema_path() -> Path:
     if getattr(sys, "frozen", False):
-        return Path(sys._MEIPASS) / "schema.sql"  # type: ignore[attr-defined]
+        return Path(getattr(sys, "_MEIPASS", app_dir())) / "schema.sql"  # type: ignore[attr-defined]
     return app_dir() / "schema.sql"
+
+
+def frontend_dist_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", app_dir())) / "frontend_dist"  # type: ignore[attr-defined]
+    return app_dir() / "frontend_dist"
 
 
 def now_iso() -> str:
@@ -101,33 +107,95 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
+def _engagement_count(conn: sqlite3.Connection) -> int:
+    if not _table_exists(conn, "engagements"):
+        return 0
+    return int(conn.execute("SELECT COUNT(*) FROM engagements").fetchone()[0])
+
+
+def _prime_frozen_database(target: Path) -> None:
+    if not getattr(sys, "frozen", False):
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    candidates = [seed_path(), app_dir() / "budget_tracker.db"]
+    if not target.exists():
+        for source in candidates:
+            if source.exists() and source.resolve() != target.resolve():
+                shutil.copy2(source, target)
+                return
+        return
+    with connect(target) as conn:
+        if _engagement_count(conn) > 0:
+            return
+    seed = seed_path()
+    if seed.exists() and seed.resolve() != target.resolve():
+        target.unlink(missing_ok=True)
+        shutil.copy2(seed, target)
+
+
 def init_db(path: Path | None = None) -> Path:
     target = path or db_path()
-    if getattr(sys, "frozen", False) and not target.exists():
-        portable = app_dir() / "budget_tracker.db"
-        if portable.exists() and portable.resolve() != target.resolve():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(portable, target)
+    _prime_frozen_database(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     with connect(target) as conn:
         legacy = _table_exists(conn, "engagements") and "complexity_mode" not in _columns(
             conn, "engagements"
         )
     if legacy:
-        backup = target.with_name(f"{target.stem}.pre-v2.bak{target.suffix}")
+        backup = target.with_name(f"{target.stem}.pre-v4.bak{target.suffix}")
         if not backup.exists():
             shutil.copy2(target, backup)
         from migrations import migrate_v1_to_v2
         migrate_v1_to_v2(target, schema_path(), now_iso())
 
     with connect(target) as conn:
+        needs_v5 = _table_exists(conn, "proposals") and "rate_basis" not in _columns(conn, "proposals")
+    if needs_v5:
+        automatic_backup(target, "pre_v5_migration")
+
+    with connect(target) as conn:
+        needs_v6 = _table_exists(conn, "rate_card_rates") and "locked_at" not in _columns(conn, "rate_card_rates")
+    if needs_v6:
+        automatic_backup(target, "pre_v6_migration")
+
+    with connect(target) as conn:
         conn.executescript(schema_path().read_text(encoding="utf-8"))
+        from migrations import (migrate_to_v4, migrate_to_v5, migrate_to_v6, migrate_to_v7, migrate_to_v8,
+                                 migrate_to_v9, migrate_to_v10)
+        migrate_to_v4(conn)
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (4, ?)",
+            (now_iso(),),
+        )
+        migrate_to_v5(conn)
+        migrate_to_v6(conn)
+        migrate_to_v7(conn)
+        migrate_to_v8(conn)
+        migrate_to_v9(conn)
+        migrate_to_v10(conn)
         if "is_active" not in _columns(conn, "team_members"):
             conn.execute("ALTER TABLE team_members ADD COLUMN is_active INTEGER DEFAULT 1 CHECK (is_active IN (0,1))")
         for key, value in DEFAULT_SETTINGS.items():
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (key, value))
+        card = conn.execute("SELECT id FROM rate_cards ORDER BY id LIMIT 1").fetchone()
+        if card is None:
+            card_id = conn.execute(
+                "INSERT INTO rate_cards(name,is_active,created_at) VALUES ('Current governed rates',1,?)",
+                (now_iso(),),
+            ).lastrowid
+            engagement_discount = float(get_setting(conn, "engagement_discount_rate", 0) or 0)
+            contract_discount = float(get_setting(conn, "contract_discount_rate", 0) or 0)
+            for role, standard_rate in get_rates(conn).items():
+                conn.execute(
+                    """INSERT INTO rate_card_rates
+                    (rate_card_id,role_name,standard_rate,engagement_rate,contract_rate,dte_rate)
+                    VALUES (?,?,?,?,?,?)""",
+                    (card_id, role, standard_rate, standard_rate * (1-engagement_discount),
+                     standard_rate * (1-contract_discount), standard_rate),
+                )
         conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?) "
+            "ON CONFLICT(version) DO UPDATE SET applied_at=excluded.applied_at",
             (SCHEMA_VERSION, now_iso()),
         )
     return target
@@ -190,6 +258,7 @@ def get_app_settings(conn: sqlite3.Connection) -> dict[str, Any]:
         "contract_discount_rate": float(get_setting(conn, "contract_discount_rate", 0) or 0),
         "variance_threshold_hours": float(get_setting(conn, "variance_threshold_hours", 6) or 6),
         "variance_threshold_pct": float(get_setting(conn, "variance_threshold_pct", 1.0) or 1.0),
+        "confidence_threshold_pct": float(get_setting(conn, "confidence_threshold_pct", 0.85) or 0.85),
     }
 
 

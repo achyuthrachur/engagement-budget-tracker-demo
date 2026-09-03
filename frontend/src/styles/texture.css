@@ -1,0 +1,43 @@
+/*
+  Extracted from budget_tracker_ui_concept.jsx's Landing component (lines 200-243, 706-711).
+  Not imported anywhere yet this round -- staged for the eventual Landing rebuild so the
+  "no gradients, quiet dot-grid + two ambient glows" depth treatment doesn't need re-deriving.
+*/
+
+.texture-dots {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+  background-size: 28px 28px;
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.glow-a {
+  position: absolute;
+  top: -10%;
+  right: -6%;
+  width: 420px;
+  height: 420px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(245, 168, 0, 0.16), transparent 70%);
+  pointer-events: none;
+  animation: floatGlow 14s ease-in-out infinite;
+}
+
+.glow-b {
+  position: absolute;
+  bottom: -16%;
+  left: -8%;
+  width: 520px;
+  height: 520px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(0, 63, 159, 0.35), transparent 70%);
+  pointer-events: none;
+  animation: floatGlow 18s ease-in-out infinite reverse;
+}
+
+@keyframes floatGlow {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(-12px, 16px); }
+}

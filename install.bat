@@ -2,19 +2,20 @@
 setlocal
 set "INSTALL_DIR=%LOCALAPPDATA%\Crowe\B2A Budget Tracker\App"
 
-if not exist "%~dp0budget_tracker.exe" (
-  powershell -NoProfile -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('budget_tracker.exe must be in the same folder as install.bat.','B2A Budget Tracker')"
+if not exist "%~dp0B2A_Budget_Tracker.exe" (
+  powershell -NoProfile -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('B2A_Budget_Tracker.exe must be in the same folder as install.bat.','B2A Budget Tracker')"
   exit /b 1
 )
 
-tasklist /FI "IMAGENAME eq budget_tracker.exe" 2>nul | find /I "budget_tracker.exe" >nul
+tasklist /FI "IMAGENAME eq B2A_Budget_Tracker.exe" 2>nul | find /I "B2A_Budget_Tracker.exe" >nul
 if not errorlevel 1 (
   powershell -NoProfile -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Save any open work and select OK. The installer will stop the running tracker before updating it.','B2A Budget Tracker')"
-  taskkill /IM budget_tracker.exe /F >nul 2>&1
+  taskkill /IM B2A_Budget_Tracker.exe /F >nul 2>&1
 )
+taskkill /IM budget_tracker.exe /F >nul 2>&1
 
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
-copy /Y "%~dp0budget_tracker.exe" "%INSTALL_DIR%\budget_tracker.exe" >nul
+copy /Y "%~dp0B2A_Budget_Tracker.exe" "%INSTALL_DIR%\B2A_Budget_Tracker.exe" >nul
 if errorlevel 1 (
   powershell -NoProfile -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('The application could not be copied. Restart Windows and run install.bat again.','B2A Budget Tracker')"
   exit /b 1

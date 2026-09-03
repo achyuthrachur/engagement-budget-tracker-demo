@@ -21,7 +21,8 @@ if not defined PORT (
 )
 
 set BUDGET_TRACKER_PORT=%PORT%
-start "" "%~dp0budget_tracker.exe"
+set BUDGET_TRACKER_NO_BROWSER=1
+start "" "%~dp0B2A_Budget_Tracker.exe"
 
 for /L %%I in (1,1,20) do (
   timeout /t 1 /nobreak >nul

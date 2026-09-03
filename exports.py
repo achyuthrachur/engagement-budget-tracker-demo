@@ -4,6 +4,7 @@ import html
 import io
 import re
 import sqlite3
+import csv
 from copy import copy
 from datetime import date
 from typing import Any
@@ -55,7 +56,7 @@ def engagement_payload(conn: sqlite3.Connection, engagement_id: int) -> dict[str
         "phases": phase_summary(conn, engagement_id),
         "adjustments": rows_to_dicts(conn.execute("""SELECT a.*,p.phase_name FROM budget_adjustments a
             LEFT JOIN phases p ON p.id=a.phase_id WHERE a.engagement_id=? ORDER BY a.effective_date,a.id""", (engagement_id,)).fetchall()),
-        "entries": rows_to_dicts(conn.execute("SELECT * FROM time_entries WHERE engagement_id=? ORDER BY week_end_date,worker_name,id", (engagement_id,)).fetchall()),
+        "entries": rows_to_dicts(conn.execute("SELECT * FROM time_entries WHERE engagement_id=? AND COALESCE(is_excluded,0)=0 ORDER BY week_end_date,worker_name,id", (engagement_id,)).fetchall()),
         "expenses": rows_to_dicts(conn.execute("SELECT * FROM expenses WHERE engagement_id=? ORDER BY incurred_date,id", (engagement_id,)).fetchall()),
         "revisions": rows_to_dicts(conn.execute("SELECT * FROM budget_revisions WHERE engagement_id=? ORDER BY revised_at,id", (engagement_id,)).fetchall()),
     }
@@ -77,6 +78,48 @@ def build_excel(conn: sqlite3.Connection, engagement_id: int) -> tuple[str, byte
     stream = io.BytesIO()
     wb.save(stream)
     return export_filename(payload["engagement"]), stream.getvalue()
+
+
+def build_scheduling_csv(
+    conn: sqlite3.Connection, engagement_id: int, today: date | None = None
+) -> tuple[str, bytes]:
+    engagement = row_to_dict(conn.execute("SELECT * FROM engagements WHERE id=?", (engagement_id,)).fetchone())
+    if not engagement:
+        raise ValueError("Engagement not found")
+    today = today or date.today()
+    current_monday = date.fromordinal(today.toordinal() - today.weekday()).isoformat()
+    rows = conn.execute(
+        """
+        SELECT tm.name, tm.role, ppw.week_start_date, ppw.budgeted_hours, ppw.forecasted_hours
+        FROM phase_person_weeks ppw
+        JOIN team_members tm ON tm.id = ppw.team_member_id
+        JOIN phases p ON p.id = ppw.phase_id
+        WHERE p.engagement_id = ?
+          AND ppw.week_start_date IS NOT NULL
+          AND ppw.week_start_date >= ?
+        ORDER BY tm.name, ppw.week_start_date, ppw.id
+        """,
+        (engagement_id, current_monday),
+    ).fetchall()
+    weeks = sorted({row["week_start_date"] for row in rows})
+    per_person: dict[tuple[str, str], float] = {}
+    roles: dict[str, str] = {}
+    for row in rows:
+        name = str(row["name"] or "")
+        week = str(row["week_start_date"] or "")
+        roles.setdefault(name, str(row["role"] or ""))
+        scheduled = row["forecasted_hours"] if row["forecasted_hours"] is not None else row["budgeted_hours"]
+        per_person[(name, week)] = per_person.get((name, week), 0.0) + float(scheduled or 0)
+    stream = io.StringIO(newline="")
+    writer = csv.writer(stream)
+    writer.writerow(["Worker", "Role", *weeks])
+    for name in sorted(roles):
+        writer.writerow([name, roles[name], *[f"{per_person.get((name, week), 0.0):.2f}" for week in weeks]])
+    filename = (
+        f"{filename_safe(engagement['client_name'])}_"
+        f"{filename_safe(engagement['engagement_code'])}_scheduling_{date.today().isoformat()}.csv"
+    )
+    return filename, stream.getvalue().encode("utf-8")
 
 
 def _build_summary_sheet(ws, payload):
@@ -117,7 +160,7 @@ def _build_summary_sheet(ws, payload):
     ws.merge_cells("F7:G7")
     ws["F7"] = "Potential Change Order Amount →"
     ws["H7"] = max(0, rows[1][3]-rows[0][3])
-    ws["K3"], ws["L3"], ws["M3"] = "SOW Fees", "Current/Actual Engagement Fees", "Variance"
+    ws["K3"], ws["L3"], ws["M3"] = "Statement of Work Fees", "Current/Actual Engagement Fees", "Variance"
     ws["K4"], ws["L4"], ws["M4"] = m["signed_sow"], rows[1][3], m["signed_sow"]-rows[1][3]
     _summary_tables(ws, team, phases)
     _style_summary(ws)
@@ -249,7 +292,7 @@ def build_html_report(conn: sqlite3.Connection, engagement_id: int, narrative: s
     <section class='summary'><table><thead><tr><th></th><th>Hours</th><th>Internal/Standard Fees</th><th>Engagement Fees</th><th>Realization</th></tr></thead>
     <tbody><tr><th>Total Budget</th><td>{format_hours(m['total_budgeted_hours'])}</td><td>{format_currency(sum(x['budgeted_std_fees'] for x in p['phases']))}</td><td>{format_currency(m['total_budgeted_fees'])}</td><td>—</td></tr>
     <tr><th>Actuals/Current Plan</th><td>{format_hours(sum(x['current_plan_hours'] for x in p['phases']))}</td><td>{format_currency(m['fees_to_date_std'])}</td><td>{format_currency(sum(x['current_plan_eng_fees'] for x in p['phases']))}</td><td>{format_percent(m['realization'])}</td></tr></tbody></table>
-    <aside><span>Signed SOW</span><strong>{format_currency(m['signed_sow'])}</strong><span>Effective budget</span><strong>{format_currency(m['effective_sow'])}</strong></aside></section>
+    <aside><span>Signed statement of work</span><strong>{format_currency(m['signed_sow'])}</strong><span>Effective budget</span><strong>{format_currency(m['effective_sow'])}</strong></aside></section>
     <section class='tables'><div><h2>Engagement Team Summary</h2><table><thead><tr><th>Name</th><th>Project Role</th><th>Hours Budget</th><th>Hours Actual</th><th>Fees Budget</th><th>Fees Current</th></tr></thead><tbody>{team_rows}</tbody></table></div>
     <div><h2>Effort Summary</h2><table><thead><tr><th>Phase</th><th>Budget Hours</th><th>Actual Hours</th><th>Variance</th><th>Budget</th><th>Fees Planned</th><th>Over/Under</th></tr></thead><tbody>{phase_rows}</tbody></table></div></section>
     {f"<section class='narrative'><h2>Status narrative</h2><p>{html.escape(narrative)}</p></section>" if narrative else ''}

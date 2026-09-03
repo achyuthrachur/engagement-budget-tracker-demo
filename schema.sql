@@ -19,6 +19,9 @@ CREATE TABLE IF NOT EXISTS engagements (
   duration_weeks    INTEGER DEFAULT 1 CHECK (duration_weeks IS NULL OR duration_weeks > 0),
   status            TEXT NOT NULL DEFAULT 'planning'
                     CHECK (status IN ('planning', 'active', 'closed')),
+  rate_mode         TEXT NOT NULL DEFAULT 'governed'
+                    CHECK (rate_mode IN ('governed', 'custom', 'flat_tiered')),
+  flat_tier_notes   TEXT,
   c360_used         INTEGER DEFAULT 0 CHECK (c360_used IN (0, 1)),
   c360_amount       REAL DEFAULT 0,
   bima_amount       REAL DEFAULT 0,
@@ -53,6 +56,9 @@ CREATE TABLE IF NOT EXISTS team_members (
   engagement_rate   REAL DEFAULT 0,
   contract_rate     REAL DEFAULT 0,
   dte_rate          REAL DEFAULT 0,
+  rate_tier_id      INTEGER REFERENCES engagement_rate_tiers(id) ON DELETE SET NULL,
+  is_custom_rate    INTEGER DEFAULT 0 CHECK (is_custom_rate IN (0, 1)),
+  custom_rate_note  TEXT,
   created_at        TEXT,
   UNIQUE (engagement_id, name COLLATE NOCASE)
 );
@@ -63,7 +69,7 @@ CREATE TABLE IF NOT EXISTS phase_person_weeks (
   team_member_id    INTEGER NOT NULL REFERENCES team_members(id) ON DELETE CASCADE,
   week_start_date   TEXT,
   budgeted_hours    REAL DEFAULT 0,
-  forecasted_hours  REAL DEFAULT 0,
+  forecasted_hours  REAL,
   UNIQUE (phase_id, team_member_id, week_start_date)
 );
 
@@ -124,7 +130,14 @@ CREATE TABLE IF NOT EXISTS weekly_snapshots (
   week_end_date     TEXT NOT NULL,
   imported_at       TEXT,
   row_count         INTEGER,
-  notes             TEXT
+  notes             TEXT,
+  covered_start_date TEXT,
+  covered_end_date   TEXT,
+  realization_value  REAL,
+  realization_delta  REAL,
+  rows_inserted      INTEGER DEFAULT 0,
+  rows_updated       INTEGER DEFAULT 0,
+  rows_removed       INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_weekly_snapshots_engagement
   ON weekly_snapshots(engagement_id, week_end_date);
@@ -153,7 +166,12 @@ CREATE TABLE IF NOT EXISTS time_entries (
   fees_std_rate        REAL DEFAULT 0,
   fees_contract_rate   REAL DEFAULT 0,
   memo                 TEXT,
-  matched_phase_id     INTEGER REFERENCES phases(id) ON DELETE SET NULL
+  normalized_worker_name TEXT,
+  is_excluded          INTEGER DEFAULT 0 CHECK (is_excluded IN (0, 1)),
+  exclusion_reason     TEXT,
+  matched_team_member_id INTEGER REFERENCES team_members(id) ON DELETE SET NULL,
+  matched_phase_id     INTEGER REFERENCES phases(id) ON DELETE SET NULL,
+  allocation_method    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_time_entries_engagement
   ON time_entries(engagement_id);
@@ -178,3 +196,110 @@ CREATE TABLE IF NOT EXISTS engagement_events (
 );
 CREATE INDEX IF NOT EXISTS idx_engagement_events
   ON engagement_events(engagement_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS proposals (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  proposal_code     TEXT NOT NULL UNIQUE,
+  client_name       TEXT NOT NULL,
+  engagement_type   TEXT,
+  first_monday      TEXT,
+  duration_weeks    INTEGER DEFAULT 1 CHECK (duration_weeks IS NULL OR duration_weeks > 0),
+  rate_basis        TEXT NOT NULL DEFAULT 'standard'
+                    CHECK (rate_basis IN ('standard','engagement','contract')),
+  discount_rate     REAL NOT NULL DEFAULT 0 CHECK (discount_rate BETWEEN 0 AND 1),
+  status            TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','converted','archived')),
+  converted_engagement_id INTEGER REFERENCES engagements(id) ON DELETE SET NULL,
+  notes             TEXT,
+  created_at        TEXT,
+  updated_at        TEXT
+);
+
+CREATE TABLE IF NOT EXISTS proposal_people (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  proposal_id       INTEGER NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
+  name              TEXT,
+  role              TEXT,
+  base_rate         REAL,
+  discount_rate     REAL NOT NULL DEFAULT 0 CHECK (discount_rate BETWEEN 0 AND 1),
+  rough_rate        REAL,
+  created_at        TEXT
+);
+
+CREATE TABLE IF NOT EXISTS proposal_person_weeks (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  proposal_person_id INTEGER NOT NULL REFERENCES proposal_people(id) ON DELETE CASCADE,
+  week_start_date    TEXT,
+  budgeted_hours     REAL DEFAULT 0,
+  forecasted_hours   REAL
+);
+
+CREATE TABLE IF NOT EXISTS rate_cards (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  name              TEXT NOT NULL UNIQUE,
+  is_active         INTEGER DEFAULT 1 CHECK (is_active IN (0,1)),
+  created_at        TEXT
+);
+
+CREATE TABLE IF NOT EXISTS rate_card_rates (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  rate_card_id      INTEGER NOT NULL REFERENCES rate_cards(id) ON DELETE CASCADE,
+  role_name         TEXT NOT NULL,
+  standard_rate     REAL DEFAULT 0,
+  engagement_rate   REAL DEFAULT 0,
+  contract_rate     REAL DEFAULT 0,
+  dte_rate          REAL DEFAULT 0,
+  locked_at         TEXT,
+  UNIQUE (rate_card_id, role_name COLLATE NOCASE)
+);
+
+CREATE TABLE IF NOT EXISTS engagement_rate_tiers (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  engagement_id     INTEGER NOT NULL REFERENCES engagements(id) ON DELETE CASCADE,
+  tier_name         TEXT NOT NULL,
+  tier_amount       REAL DEFAULT 0,
+  tier_order        INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS import_exceptions (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  engagement_id       INTEGER NOT NULL REFERENCES engagements(id) ON DELETE CASCADE,
+  transaction_id      TEXT,
+  worker_name         TEXT,
+  normalized_worker_name TEXT,
+  phase_desc          TEXT,
+  exception_code      TEXT NOT NULL,
+  status              TEXT NOT NULL DEFAULT 'pending'
+                      CHECK (status IN ('pending', 'resolved', 'excluded')),
+  hours               REAL DEFAULT 0,
+  fees_contract_rate  REAL DEFAULT 0,
+  snapshot_id         INTEGER REFERENCES weekly_snapshots(id) ON DELETE SET NULL,
+  time_entry_id       INTEGER REFERENCES time_entries(id) ON DELETE CASCADE,
+  resolution_note     TEXT,
+  created_at          TEXT,
+  updated_at          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_import_exceptions_engagement
+  ON import_exceptions(engagement_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_import_exceptions_entry_code
+  ON import_exceptions(time_entry_id, exception_code)
+  WHERE time_entry_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS allocation_rules (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  engagement_id     INTEGER NOT NULL REFERENCES engagements(id) ON DELETE CASCADE,
+  team_member_id    INTEGER NOT NULL REFERENCES team_members(id) ON DELETE CASCADE,
+  phase_id          INTEGER NOT NULL REFERENCES phases(id) ON DELETE CASCADE,
+  created_at        TEXT,
+  created_from_exception_id INTEGER REFERENCES import_exceptions(id) ON DELETE SET NULL,
+  UNIQUE (engagement_id, team_member_id, phase_id)
+);
+
+CREATE TABLE IF NOT EXISTS engagement_drafts (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  engagement_code   TEXT,
+  client_name       TEXT,
+  step              INTEGER NOT NULL DEFAULT 1,
+  wizard_json       TEXT NOT NULL,
+  created_at        TEXT,
+  updated_at        TEXT
+);

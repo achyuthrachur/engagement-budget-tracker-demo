@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import io
+import csv
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 from openpyxl import load_workbook
 
 from db import connect, init_db, now_iso
-from exports import build_excel, build_html_report
+from exports import build_excel, build_html_report, build_scheduling_csv
 
 
 class ExportTests(unittest.TestCase):
@@ -48,6 +50,28 @@ class ExportTests(unittest.TestCase):
         self.assertIn("Effort Summary", report)
         self.assertIn("@page", report)
         self.assertIn("Delivery is on track.", report)
+
+    def test_scheduling_csv_uses_current_monday_cutoff_and_null_forecast_fallback(self):
+        with connect(self.path) as db:
+            member = db.execute("SELECT id FROM team_members WHERE engagement_id=?", (self.eid,)).fetchone()["id"]
+            phase = db.execute("SELECT id FROM phases WHERE engagement_id=?", (self.eid,)).fetchone()["id"]
+            db.execute("""INSERT INTO phase_person_weeks
+                (phase_id,team_member_id,week_start_date,budgeted_hours,forecasted_hours)
+                VALUES (?,?,?,?,?)""", (phase, member, "2026-08-03", 5, 7))
+            db.execute("""INSERT INTO phase_person_weeks
+                (phase_id,team_member_id,week_start_date,budgeted_hours,forecasted_hours)
+                VALUES (?,?,?,?,?)""", (phase, member, "2026-08-10", 8, None))
+            db.execute("""INSERT INTO phase_person_weeks
+                (phase_id,team_member_id,week_start_date,budgeted_hours,forecasted_hours)
+                VALUES (?,?,?,?,?)""", (phase, member, "2026-08-17", 10, 0))
+            filename, content = build_scheduling_csv(db, self.eid, today=date(2026, 8, 13))
+        rows = list(csv.reader(io.StringIO(content.decode("utf-8"))))
+        self.assertIn("_scheduling_", filename)
+        self.assertEqual(rows[0], ["Worker", "Role", "2026-08-10", "2026-08-17"])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1][0], "Smith, Jane")
+        self.assertEqual(rows[1][2], "8.00")
+        self.assertEqual(rows[1][3], "0.00")
 
     def seed(self, db):
         eid=db.execute("""INSERT INTO engagements

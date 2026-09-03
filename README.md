@@ -2,7 +2,7 @@
 
 The canonical implementation of the B2A Engagement Budget Tracker PRD. It supports simple and complex engagements in one data model, weekly phase/person planning, Cognos import review, budget controls and revisions, adjustment and expense ledgers, history, Excel export, and a print-ready HTML report.
 
-All bundled demo data is synthetic and anonymized.
+The bundled demonstration database is generated from the five actual workbooks in `reference\B2A Examples`. Treat it as business data rather than synthetic sample data.
 
 ## Run from source
 
@@ -13,9 +13,9 @@ python -m pip install -r requirements.txt
 python app.py
 ```
 
-Open `http://localhost:5000`. The app creates `budget_tracker.db` beside the source. Use **Load Demo Data** in Settings to copy the bundled synthetic dataset.
+Open `http://localhost:5000`. The app creates `budget_tracker.db` beside the source. Use **Load Demo Data** in Settings to copy the bundled workbook-derived dataset.
 
-Existing version-1 databases are migrated automatically on startup. A `.pre-v2.bak.db` backup is written before migration.
+Existing databases are migrated automatically on startup. The application creates a backup before a database-format migration.
 
 ## Test
 
@@ -41,9 +41,14 @@ node .\tests\browser_smoke.cjs
 .\build.bat
 ```
 
-The build produces a `release` folder containing the executable, launcher, installer and quick-start guide. Run `install.bat` for a standard-user installation and desktop shortcut.
+The build produces two shareable artifacts:
 
-Production data is stored under `%LOCALAPPDATA%\Crowe\B2A Budget Tracker`, separate from the installed executable so an application update cannot overwrite the database. The launcher reuses an existing tracker process when one is already running.
+- `release\B2A_Budget_Tracker.exe` is a true one-file application. Double-clicking it selects an available local port and opens the Dashboard in the default browser.
+- `release\B2A_Budget_Tracker_<version>.zip` contains the executable, optional desktop-shortcut installer, launcher, version file and the complete Word instruction guide.
+
+The ZIP contains no Markdown instructions. Open `B2A_Budget_Tracker_Instructions.docx` for first-time setup, engagement creation, the weekly process, recovery, glossary and administrator notes.
+
+The portable application creates `budget_tracker.db` beside `B2A_Budget_Tracker.exe`. The optional installer places both application and database under `%LOCALAPPDATA%\Crowe\B2A Budget Tracker\App`. Back up that database before replacing or moving the installed application. The launcher reuses an existing tracker process when one is already running.
 
 ## Release status
 
